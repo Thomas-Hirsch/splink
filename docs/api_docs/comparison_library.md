@@ -9,7 +9,7 @@ tags:
     handler: python
     options:
       show_root_heading: false
-      show_root_toc: false
+      show_root_toc_entry: false
       show_source: false
       members_order: source
       inherited_members: false
@@ -17,7 +17,7 @@ tags:
 
 ## AbsoluteDateDifferenceAtThresholds
 
-An alias of [AbsoluteTimeDifferenceAtThresholds](./comparison_library.html#splink.comparison_library.AbsoluteTimeDifferenceAtThresholds).
+An alias of [AbsoluteTimeDifferenceAtThresholds](./comparison_library.md#splink.comparison_library.AbsoluteTimeDifferenceAtThresholds).
 
 
 ## Configuring comparisons
@@ -28,6 +28,6 @@ Note that all comparisons have a `.configure()` method as follows:
     handler: python
     options:
       show_root_heading: false
-      show_root_toc: true
+      show_root_toc_entry: true
       show_source: false
 

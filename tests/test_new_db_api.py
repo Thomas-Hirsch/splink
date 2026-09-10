@@ -2,9 +2,9 @@ import os
 
 import splink.internals.comparison_level_library as cll
 import splink.internals.comparison_library as cl
-from splink import block_on
+from splink import ColumnExpression, block_on
 from splink.blocking_analysis import (
-    cumulative_comparisons_to_be_scored_from_blocking_rules_chart,
+    chart_comparisons_from_blocking_rules,
 )
 from splink.exploratory import profile_columns
 from splink.internals.linker import Linker
@@ -23,12 +23,7 @@ comparison_name = cl.CustomComparison(
             "label_for_charts": "both names matching",
         },
         cll.CustomLevel(
-            (
-                "levenshtein("
-                "first_name_l || surname_l, "
-                "first_name_r || surname_r"
-                ") <= 3"
-            ),
+            ("levenshtein(first_name_l || surname_l, first_name_r || surname_r) <= 3"),
             "both names fuzzy matching",
         ),
         cll.ExactMatchLevel("first_name"),
@@ -40,7 +35,9 @@ comparison_city = cl.ExactMatch("city").configure(u_probabilities=[0.6, 0.4])
 comparison_email = cl.LevenshteinAtThresholds("email", 3).configure(
     m_probabilities=[0.8, 0.1, 0.1]
 )
-comparison_dob = cl.LevenshteinAtThresholds("dob", [1, 2])
+comparison_dob = cl.LevenshteinAtThresholds(
+    ColumnExpression("dob").cast_to_string(), [1, 2]
+)
 
 cl_settings = {
     "link_type": "dedupe_only",
@@ -59,30 +56,18 @@ cl_settings = {
 
 
 @mark_with_dialects_excluding()
-def test_run_predict(dialect, test_helpers):
+def test_run_predict(dialect, test_helpers, fake_1000):
     helper = test_helpers[dialect]
-    df = helper.load_frame_from_csv("./tests/datasets/fake_1000_from_splink_demos.csv")
 
-    db_api = helper.DatabaseAPI(**helper.db_api_args())
-    linker = Linker(
-        df,
-        cl_settings,
-        db_api,
-    )
+    linker = helper.linker_with_registration(fake_1000, cl_settings)
     linker.inference.predict()
 
 
 @mark_with_dialects_excluding()
-def test_full_run(dialect, test_helpers, tmp_path):
+def test_full_run(dialect, test_helpers, tmp_path, fake_1000):
     helper = test_helpers[dialect]
-    df = helper.load_frame_from_csv("./tests/datasets/fake_1000_from_splink_demos.csv")
 
-    db_api = helper.DatabaseAPI(**helper.db_api_args())
-    linker = Linker(
-        df,
-        cl_settings,
-        db_api,
-    )
+    linker = helper.linker_with_registration(fake_1000, cl_settings)
     linker.training.estimate_probability_two_random_records_match(
         ["l.first_name = r.first_name AND l.surname = r.surname"],
         0.6,
@@ -112,21 +97,20 @@ def test_full_run(dialect, test_helpers, tmp_path):
 
 
 @mark_with_dialects_excluding()
-def test_charts(dialect, test_helpers, tmp_path):
+def test_charts(dialect, test_helpers, fake_1000):
     helper = test_helpers[dialect]
-    df = helper.load_frame_from_csv("./tests/datasets/fake_1000_from_splink_demos.csv")
 
-    db_api = helper.DatabaseAPI(**helper.db_api_args())
+    db_api = helper.db_api()
+    df_sdf = db_api.register(fake_1000)
 
-    cumulative_comparisons_to_be_scored_from_blocking_rules_chart(
-        table_or_tables=df,
+    chart_comparisons_from_blocking_rules(
+        df_sdf,
         blocking_rules=[block_on("dob"), block_on("first_name")],
         link_type="dedupe_only",
-        db_api=db_api,
         unique_id_column_name="unique_id",
     )
 
-    linker = Linker(df, cl_settings, db_api)
+    linker = Linker(df_sdf, cl_settings)
 
     linker.training.estimate_probability_two_random_records_match(
         ["l.first_name = r.first_name AND l.surname = r.surname"],
@@ -145,9 +129,9 @@ def test_charts(dialect, test_helpers, tmp_path):
 
 
 @mark_with_dialects_excluding()
-def test_exploratory_charts(dialect, test_helpers):
+def test_exploratory_charts(dialect, test_helpers, fake_1000):
     helper = test_helpers[dialect]
-    df = helper.load_frame_from_csv("./tests/datasets/fake_1000_from_splink_demos.csv")
 
-    db_api = helper.DatabaseAPI(**helper.db_api_args())
-    profile_columns(df, db_api, "first_name")
+    db_api = helper.db_api()
+    df_sdf = db_api.register(fake_1000)
+    profile_columns(df_sdf, "first_name")

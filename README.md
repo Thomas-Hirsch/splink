@@ -11,15 +11,17 @@
 > 🎉 Splink 4 has been released! Examples of new syntax are [here](https://moj-analytical-services.github.io/splink/demos/examples/examples_index.html) and a release announcement is [here](https://moj-analytical-services.github.io/splink/blog/2024/07/24/splink-400-released.html).
 
 
-# Fast, accurate and scalable probabilistic data linkage
+# Fast, accurate and scalable data linkage and deduplication
 
 Splink is a Python package for probabilistic record linkage (entity resolution) that allows you to deduplicate and link records from datasets that lack unique identifiers.
+
+It is used widely by within government, academia and the private sector - see [use cases](https://moj-analytical-services.github.io/splink/#use-cases).
 
 ## Key Features
 
 ⚡ **Speed:** Capable of linking a million records on a laptop in around a minute.<br>
 🎯 **Accuracy:** Support for term frequency adjustments and user-defined fuzzy matching logic.<br>
-🌐 **Scalability:** Execute linkage in Python (using DuckDB) or big-data backends like AWS Athena or Spark for 100+ million records.<br>
+🌐 **Scalability:** Execute linkage in Python (using DuckDB) or big-data backends like Spark for 100+ million records.<br>
 🎓 **Unsupervised Learning:** No training data is required for model training.<br>
 📊 **Interactive Outputs:** A suite of interactive visualisations help users understand their model and diagnose problems.<br>
 
@@ -29,15 +31,15 @@ Splink's linkage algorithm is based on Fellegi-Sunter's model of record linkage,
 
 Consider the following records that lack a unique person identifier:
 
-![tables showing what splink does](https://raw.githubusercontent.com/moj-analytical-services/splink/master/docs/img/README/what_does_splink_do_1.drawio.png)
+![Input records that lack a unique person identifier](https://raw.githubusercontent.com/moj-analytical-services/splink/master/docs/img/README/splink_01_input_records.png)
 
 Splink predicts which rows link together:
 
-![tables showing what splink does](https://raw.githubusercontent.com/moj-analytical-services/splink/master/docs/img/README/what_does_splink_do_2.drawio.png)
+![Pairwise predictions with match probabilities](https://raw.githubusercontent.com/moj-analytical-services/splink/master/docs/img/README/splink_02_pairwise_links.png)
 
 and clusters these links to produce an estimated person ID:
 
-![tables showing what splink does](https://raw.githubusercontent.com/moj-analytical-services/splink/master/docs/img/README/what_does_splink_do_3.drawio.png)
+![Clusters of linked records forming estimated person IDs](https://raw.githubusercontent.com/moj-analytical-services/splink/master/docs/img/README/splink_03_clusters.png)
 
 ## What data does Splink work best with?
 
@@ -58,7 +60,7 @@ The Office for National Statistics have written a [case study about using Splink
 
 ## Installation
 
-Splink supports python 3.8+. To obtain the latest released version of splink you can install from PyPI using pip:
+Splink supports python 3.9+. To obtain the latest released version of splink you can install from PyPI using pip:
 
 ```sh
 pip install splink
@@ -73,12 +75,10 @@ conda install -c conda-forge splink
 ### Installing Splink for Specific Backends
 
 
-For projects requiring specific backends, Splink offers optional installations for **Spark**, **Athena**, and **PostgreSQL**. These can be installed by appending the backend name in brackets to the pip install command:
+For projects requiring specific backends, Splink offers optional installations for **Spark** and **PostgreSQL**. These can be installed by appending the backend name in brackets to the pip install command:
 ```sh
 pip install 'splink[{backend}]'
 ```
-
-Should you require a version of Splink without **DuckDB**, see our section on [DuckDBLess Splink Installation](https://moj-analytical-services.github.io/splink/installations.html#duckdb-less-installation).
 
 <details>
 <summary><i>Click here for backend-specific installation commands</i></summary>
@@ -86,11 +86,6 @@ Should you require a version of Splink without **DuckDB**, see our section on [D
 #### Spark
 ```sh
 pip install 'splink[spark]'
-```
-
-#### Athena
-```sh
-pip install 'splink[athena]'
 ```
 
 #### PostgreSQL
@@ -107,7 +102,6 @@ For more detailed tutorial, please see [here](https://moj-analytical-services.gi
 
 ```py
 import splink.comparison_library as cl
-import splink.comparison_template_library as ctl
 from splink import DuckDBAPI, Linker, SettingsCreator, block_on, splink_datasets
 
 db_api = DuckDBAPI()
@@ -119,14 +113,14 @@ settings = SettingsCreator(
     comparisons=[
         cl.JaroWinklerAtThresholds("first_name", [0.9, 0.7]),
         cl.JaroAtThresholds("surname", [0.9, 0.7]),
-        ctl.DateComparison(
+        cl.DateOfBirthComparison(
             "dob",
             input_is_string=True,
             datetime_metrics=["year", "month"],
             datetime_thresholds=[1, 1],
         ),
         cl.ExactMatch("city").configure(term_frequency_adjustments=True),
-        ctl.EmailComparison("email"),
+        cl.EmailComparison("email"),
     ],
     blocking_rules_to_generate_predictions=[
         block_on("first_name"),
@@ -160,6 +154,7 @@ df_clusters = clusters.as_pandas_dataframe(limit=5)
 
 ## Videos
 
+- [Pydata Global 2024 talk](https://www.youtube.com/watch?v=eQtFkI8f02U)
 - [A introductory presentation on Splink](https://www.youtube.com/watch?v=msz3T741KQI)
 - [An introduction to the Splink Comparison Viewer dashboard](https://www.youtube.com/watch?v=DNvCMqjipis)
 
@@ -168,11 +163,13 @@ df_clusters = clusters.as_pandas_dataframe(limit=5)
 
 To find the best place to ask a question, report a bug or get general advice, please refer to our [Guide](./CONTRIBUTING.md).
 
-## Use Cases
-
-To see how users are using Splink in the wild, check out the [Use Cases](https://moj-analytical-services.github.io/splink/#use-cases) section of the docs.
-
 ## Awards
+
+🥇 Civil Service Awards 2025: Innovation category - [Winner](https://x.com/CSWnews/status/1998488787433979981)
+
+🥇 Civil Service Awards 2025: The Excellence In Delivery Award was [won](https://www.civilserviceawards.com/winners-2025/) by a dashboard powered by Splink.
+
+🥇 OpenUK Awards 2025: Open data category - [Winner](https://openuk.uk/awards/)
 
 🥈 Civil Service Awards 2023: Best Use of Data, Science, and Technology - [Runner up](https://www.civilserviceawards.com/best-use-of-data-science-and-technology-award-2/)
 
@@ -187,7 +184,7 @@ To see how users are using Splink in the wild, check out the [Use Cases](https:/
 
 ## Citation
 
-If you use Splink in your research, we'd be grateful for a citation as follows:
+If you use Splink in your research, please cite as follows:
 
 ```BibTeX
 @article{Linacre_Lindsay_Manassis_Slade_Hepworth_2022,

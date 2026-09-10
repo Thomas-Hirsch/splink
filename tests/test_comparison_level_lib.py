@@ -9,7 +9,7 @@ from .decorator import mark_with_dialects_excluding, mark_with_dialects_includin
 @mark_with_dialects_excluding()
 def test_columns_reversed_level(test_helpers, dialect):
     helper = test_helpers[dialect]
-    db_api = helper.extra_linker_args()["db_api"]
+    db_api = helper.db_api()
 
     test_cases = [
         {
@@ -104,7 +104,7 @@ def test_columns_reversed_level(test_helpers, dialect):
 @mark_with_dialects_excluding()
 def test_perc_difference(test_helpers, dialect):
     helper = test_helpers[dialect]
-    db_api = helper.extra_linker_args()["db_api"]
+    db_api = helper.db_api()
 
     perc_comparison = cl.CustomComparison(
         comparison_description="amount",
@@ -162,7 +162,7 @@ def test_perc_difference(test_helpers, dialect):
 @mark_with_dialects_excluding()
 def test_levenshtein_level(test_helpers, dialect):
     helper = test_helpers[dialect]
-    db_api = helper.extra_linker_args()["db_api"]
+    db_api = helper.db_api()
 
     levenshtein_comparison = cl.CustomComparison(
         comparison_description="name",
@@ -227,7 +227,7 @@ def test_levenshtein_level(test_helpers, dialect):
 @mark_with_dialects_excluding("postgres")
 def test_damerau_levenshtein_level(test_helpers, dialect):
     helper = test_helpers[dialect]
-    db_api = helper.extra_linker_args()["db_api"]
+    db_api = helper.db_api()
 
     damerau_levenshtein_comparison = cl.CustomComparison(
         comparison_description="name",
@@ -297,7 +297,7 @@ def test_damerau_levenshtein_level(test_helpers, dialect):
 @mark_with_dialects_excluding()
 def test_absolute_difference(test_helpers, dialect):
     helper = test_helpers[dialect]
-    db_api = helper.extra_linker_args()["db_api"]
+    db_api = helper.db_api()
 
     abs_comparison = cl.CustomComparison(
         comparison_description="amount",
@@ -365,14 +365,12 @@ def test_absolute_difference(test_helpers, dialect):
     run_comparison_vector_value_tests(test_cases, db_api)
 
 
-@mark_with_dialects_including("duckdb", pass_dialect=True)
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
 def test_cosine_similarity_level(test_helpers, dialect):
     import pyarrow as pa
 
     helper = test_helpers[dialect]
-    db_api = helper.extra_linker_args()["db_api"]
-
-    EMBEDDING_DIMENSION = 4
+    db_api = helper.db_api()
 
     cosine_similarity_comparison_using_levels = cl.CustomComparison(
         comparison_description="text_vector",
@@ -419,17 +417,20 @@ def test_cosine_similarity_level(test_helpers, dialect):
     ]
 
     # Convert input_dicts to a pyarrow Table
-    inputs_pa = pa.Table.from_pydict(
-        {
-            "text_vector_l": [d["text_vector_l"] for d in input_dicts],
-            "text_vector_r": [d["text_vector_r"] for d in input_dicts],
-            "expected_value": [d["expected_value"] for d in input_dicts],
-            "expected_label": [d["expected_label"] for d in input_dicts],
-        },
+    inputs_pa = pa.Table.from_pylist(
+        [
+            {
+                "text_vector_l": d["text_vector_l"],
+                "text_vector_r": d["text_vector_r"],
+                "expected_value": d["expected_value"],
+                "expected_label": d["expected_label"],
+            }
+            for d in input_dicts
+        ],
         schema=pa.schema(
             [
-                ("text_vector_l", pa.list_(pa.float32(), EMBEDDING_DIMENSION)),
-                ("text_vector_r", pa.list_(pa.float32(), EMBEDDING_DIMENSION)),
+                ("text_vector_l", pa.list_(pa.float64(), 4)),
+                ("text_vector_r", pa.list_(pa.float64(), 4)),
                 ("expected_value", pa.int16()),
                 ("expected_label", pa.string()),
             ]

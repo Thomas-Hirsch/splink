@@ -14,18 +14,19 @@ from splink.internals.predict import predict_from_comparison_vectors_sqls_using_
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.sql_transform import move_l_r_table_prefix_to_column_suffix
 from splink.internals.vertically_concatenate import (
-    compute_df_concat,
-    compute_df_concat_with_tf,
+    enqueue_df_concat,
+    enqueue_df_concat_with_tf,
 )
 
 if TYPE_CHECKING:
     from splink.internals.linker import Linker
+    from splink.internals.settings import Settings
 
 
 def truth_space_table_from_labels_with_predictions_sqls(
     threshold_actual: float = 0.5,
     match_weight_round_to_nearest: float | None = None,
-    total_labels: int = None,
+    total_labels: int | None = None,
     positives_not_captured_by_blocking_rules_scored_as_zero: bool = True,
 ) -> list[dict[str, str]]:
     """
@@ -289,8 +290,8 @@ def truth_space_table_from_labels_with_predictions_sqls(
     return sqls
 
 
-def _select_found_by_blocking_rules(linker: "Linker") -> str:
-    brs = linker._settings_obj._blocking_rules_to_generate_predictions
+def _select_found_by_blocking_rules(settings_obj: "Settings") -> str:
+    brs = settings_obj._blocking_rules_to_generate_predictions
 
     if brs:
         br_strings = [
@@ -315,9 +316,7 @@ def truth_space_table_from_labels_table(
     match_weight_round_to_nearest: Optional[float] = None,
 ) -> SplinkDataFrame:
     pipeline = CTEPipeline()
-
-    nodes_with_tf = compute_df_concat_with_tf(linker, pipeline)
-    pipeline = CTEPipeline([nodes_with_tf])
+    enqueue_df_concat_with_tf(linker, pipeline)
 
     sqls = predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename)
     pipeline.enqueue_list_of_sqls(sqls)
@@ -337,7 +336,7 @@ def truth_space_table_from_labels_column(
     linker: "Linker",
     label_colname: str,
     threshold_actual: float = 0.5,
-    match_weight_round_to_nearest: float = None,
+    match_weight_round_to_nearest: float | None = None,
     positives_not_captured_by_blocking_rules_scored_as_zero: bool = True,
 ) -> SplinkDataFrame:
     # First we need to calculate the number of implicit true negatives
@@ -350,19 +349,17 @@ def truth_space_table_from_labels_column(
         group_by_statement = "group by source_dataset"
 
     pipeline = CTEPipeline()
-    concat = compute_df_concat(linker, pipeline)
-
-    pipeline = CTEPipeline([concat])
+    enqueue_df_concat(linker, pipeline)
 
     sql = f"""
         select count(*) as count
-        from {concat.physical_name}
+        from __splink__df_concat
         {group_by_statement}
     """
 
     pipeline.enqueue_sql(sql, "__splink__cartesian_product")
     cartesian_count = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
-    row_count_df = cartesian_count.as_record_dict()
+    row_count_df = cartesian_count.as_record_list()
     cartesian_count.drop_table_from_database_and_remove_from_cache()
 
     total_labels = calculate_cartesian(row_count_df, link_type)
@@ -421,11 +418,10 @@ def predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename):
     sqls_2 = predict_from_comparison_vectors_sqls_using_settings(
         linker._settings_obj,
         include_clerical_match_score=True,
-        sql_infinity_expression=linker._infinity_expression,
     )
 
     sqls.extend(sqls_2)
-    br_col = _select_found_by_blocking_rules(linker)
+    br_col = _select_found_by_blocking_rules(linker._settings_obj)
 
     sql = f"""
     select *, {br_col}
@@ -451,8 +447,7 @@ def prediction_errors_from_labels_table(
     threshold_match_probability: float = 0.5,
 ) -> SplinkDataFrame:
     pipeline = CTEPipeline()
-    nodes_with_tf = compute_df_concat_with_tf(linker, pipeline)
-    pipeline = CTEPipeline([nodes_with_tf])
+    enqueue_df_concat_with_tf(linker, pipeline)
 
     sqls = predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename)
 
@@ -502,7 +497,10 @@ def _predict_from_label_column_sql(linker, label_colname):
     settings = linker._settings_obj
     brs = settings._blocking_rules_to_generate_predictions
 
-    label_blocking_rule = BlockingRule(f"l.{label_colname} = r.{label_colname}")
+    label_blocking_rule = BlockingRule(
+        f"l.{label_colname} = r.{label_colname}",
+        sql_dialect_str=linker._sql_dialect_str,
+    )
     label_blocking_rule.preceding_rules = brs.copy()
     brs.append(label_blocking_rule)
 

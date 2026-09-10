@@ -3,9 +3,7 @@ import math
 import os
 import re
 
-import pandas as pd
 import sqlglot
-from numpy import nan
 from pyspark.sql.dataframe import DataFrame as spark_df
 from pyspark.sql.utils import AnalysisException
 
@@ -15,8 +13,12 @@ from splink.internals.dialects import (
     SparkDialect,
 )
 from splink.internals.misc import (
+    is_pandas_frame,
     major_minor_version_greater_equal_than,
+    record_dict_to_list,
+    to_pyarrow_if_dict,
 )
+from splink.internals.spark.spark_helpers.version import get_spark_major_version
 
 from .dataframe import SparkDataFrame
 from .jar_location import get_scala_udfs
@@ -64,21 +66,29 @@ class SparkAPI(DatabaseAPI[spark_df]):
     def _table_registration(
         self, input: AcceptableInputTableType, table_name: str
     ) -> None:
-        if isinstance(input, dict):
-            input = pd.DataFrame(input)
-        elif isinstance(input, list):
-            input = self.spark.createDataFrame(input)
-
-        if isinstance(input, pd.DataFrame):
+        if is_pandas_frame(input):
             input = self._clean_pandas_df(input)
+        # spark 3 has no arrow support, so we need to convert to list if it's a dict
+        if get_spark_major_version() == 3:
+            if isinstance(input, dict):
+                input = record_dict_to_list(input)
+        else:
+            # spark can handle lists natively, so let it handle those
+            input = to_pyarrow_if_dict(input)
+        if not isinstance(input, spark_df):
+            # TODO: spark 3 check for nicer arrow message
             input = self.spark.createDataFrame(input)
-
         input.createOrReplaceTempView(table_name)
 
     def table_to_splink_dataframe(
         self, templated_name: str, physical_name: str
     ) -> SparkDataFrame:
         return SparkDataFrame(templated_name, physical_name, self)
+
+    def _load_from_csv(self, path: str) -> spark_df:
+        df = self.spark.read.csv(path, header=True)
+        df.persist()
+        return df
 
     def table_exists_in_database(self, table_name):
         query_result = self._execute_sql_against_backend(
@@ -124,13 +134,12 @@ class SparkAPI(DatabaseAPI[spark_df]):
         return self.spark.sql(final_sql)
 
     def delete_table_from_database(self, name):
-        self._execute_sql_against_backend(f"drop table {name}")
-
-    @property
-    def accepted_df_dtypes(self):
-        return [pd.DataFrame, spark_df]
+        self._execute_sql_against_backend(f"drop table if exists {name}")
 
     def _clean_pandas_df(self, df):
+        import pandas as pd
+        from numpy import nan
+
         return df.fillna(nan).replace([nan, pd.NA], [None, None])
 
     def _set_splink_datastore(self, catalog, database):
@@ -155,8 +164,13 @@ class SparkAPI(DatabaseAPI[spark_df]):
         # be stored. The filter will remove none, so if catalog is not provided and
         # spark version is < 3.3.0 we will use the default catalog.
         self.splink_data_store = ".".join(
-            [f"`{x}`" for x in [catalog, database] if x is not None]
+            [self._quote_if_needed(x) for x in [catalog, database] if x is not None]
         )
+
+    def _quote_if_needed(self, identifier):
+        if identifier.startswith("`") and identifier.endswith("`"):
+            return identifier
+        return f"`{identifier}`"
 
     def _register_udfs_from_jar(self):
         # TODO: this should check if these are already registered and skip if so
@@ -179,7 +193,7 @@ class SparkAPI(DatabaseAPI[spark_df]):
                 "for an example.\n"
                 "You will not be able to use these functions in your linkage.\n"
                 "You can find the location of the jar by calling the following function"
-                ":\nfrom splink.spark.jar_location import similarity_jar_location"
+                ":\nfrom splink.backends.spark import similarity_jar_location"
                 "\n\nFull error:\n"
                 f"{e}"
             )
@@ -235,6 +249,7 @@ class SparkAPI(DatabaseAPI[spark_df]):
             r"__splink__clusters_at_threshold",
             r"__splink__clusters_at_all_thresholds",
             r"__splink__stable_nodes_at_new_threshold",
+            r"__splink__clustering_output_final",
         ]
 
         num_partitions = self.num_partitions_on_repartition
@@ -262,6 +277,8 @@ class SparkAPI(DatabaseAPI[spark_df]):
         elif templated_name == "__splink__clusters_at_all_thresholds":
             num_partitions = math.ceil(num_partitions / 10)
         elif templated_name == "__splink__stable_nodes_at_new_threshold":
+            num_partitions = math.ceil(num_partitions / 10)
+        elif templated_name == "__splink__clustering_output_final":
             num_partitions = math.ceil(num_partitions / 10)
 
         if re.fullmatch(r"|".join(names_to_repartition), templated_name):
@@ -291,6 +308,7 @@ class SparkAPI(DatabaseAPI[spark_df]):
             r"__splink__clusters_at_all_thresholds",
             r"__splink__clustering_output_final",
             r"__splink__stable_nodes_at_new_threshold",
+            r"__splink__filtered_neighbours.*",
         ]
 
         if re.fullmatch(r"|".join(regex_to_persist), templated_name):

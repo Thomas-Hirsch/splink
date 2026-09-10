@@ -1,3 +1,5 @@
+from statistics import mean
+
 import pytest
 
 from .basic_settings import get_settings_dict
@@ -20,7 +22,7 @@ def test_train_vs_predict(test_helpers, dialect):
     df = helper.load_frame_from_csv("./tests/datasets/fake_1000_from_splink_demos.csv")
     settings_dict = get_settings_dict()
     settings_dict["blocking_rules_to_generate_predictions"] = ["l.surname = r.surname"]
-    linker = helper.Linker(df, settings_dict, **helper.extra_linker_args())
+    linker = helper.linker_with_registration(df, settings_dict)
 
     training_session = (
         linker.training.estimate_parameters_using_expectation_maximisation(
@@ -31,8 +33,8 @@ def test_train_vs_predict(test_helpers, dialect):
     expected = training_session.core_model_settings.probability_two_random_records_match
 
     # We expect the probability_two_random_records_match to be the same as for a predict
-    df = linker.inference.predict().as_pandas_dataframe()
-    actual = df["match_probability"].mean()
+    df = linker.inference.predict().as_dict()
+    actual = mean(df["match_probability"])
 
     # Will not be exactly equal because expected represents the
     # probability_two_random_records_match

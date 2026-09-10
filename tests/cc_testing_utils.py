@@ -1,7 +1,6 @@
 import random
 
 import networkx as nx
-import pandas as pd
 from networkx.algorithms import connected_components as cc_nx
 
 from splink.internals.clustering import cluster_pairwise_predictions_at_threshold
@@ -17,31 +16,40 @@ def generate_random_graph(graph_size, density=0.001, seed=None):
 
 
 def nodes_and_edges_from_graph(G):
-    edges = nx.to_pandas_edgelist(G)
-    edges.columns = ["unique_id_l", "unique_id_r"]
+    edges = nx.to_edgelist(G)
+    nodes = {"unique_id": [*G.nodes]}
 
-    nodes = pd.DataFrame({"unique_id": G.nodes})
-
-    return nodes, edges
+    return nodes, [
+        {"unique_id_l": node_l, "unique_id_r": node_r} for node_l, node_r, _ in edges
+    ]
 
 
 def run_cc_implementation(nodes, edges):
     # finally, run our connected components algorithm
     db_api = DuckDBAPI()
+    nodes_sdf = db_api.register(nodes)
+    edges_sdf = db_api.register(edges)
     cc = cluster_pairwise_predictions_at_threshold(
-        nodes=nodes,
-        edges=edges,
+        nodes=nodes_sdf,
+        edges=edges_sdf,
         db_api=db_api,
         node_id_column_name="unique_id",
         edge_id_column_name_left="unique_id_l",
         edge_id_column_name_right="unique_id_r",
         threshold_match_probability=None,
-    ).as_pandas_dataframe()
+    )
 
-    cc = cc.rename(columns={"unique_id": "node_id", "cluster_id": "representative"})
-    cc = cc[["node_id", "representative"]]
-    cc.sort_values(by=["node_id", "representative"], inplace=True)
-    return cc
+    return cc.query_sql(
+        """
+        SELECT
+            unique_id AS node_id,
+            cluster_id AS representative,
+        FROM
+            {this}
+        ORDER BY
+            node_id, representative
+        """
+    )
 
 
 def networkx_solve(G):
@@ -51,4 +59,5 @@ def networkx_solve(G):
         for n in cc:
             row = {"node_id": n, "representative": m}
             rows.append(row)
-    return pd.DataFrame(rows).sort_values(by=["node_id", "representative"])
+
+    return sorted(rows, key=lambda node: (node["node_id"], node["representative"]))

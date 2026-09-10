@@ -1,8 +1,11 @@
+import pytest
+
+pytest.importorskip("pyspark")
+# ruff: noqa: E402 (module level import not at top of file)
+
 import os
 
-import pandas as pd
 import pyspark.sql.functions as f
-import pytest
 from pyspark.sql.types import StringType, StructField, StructType
 
 import splink.internals.comparison_level_library as cll
@@ -13,21 +16,26 @@ from splink.internals.spark.database_api import SparkAPI
 
 from .basic_settings import get_settings_dict, name_comparison
 from .decorator import mark_with_dialects_including
-from .linker_utils import _test_write_functionality, register_roc_data
 
 
 @mark_with_dialects_including("spark")
-def test_full_example_spark(spark, df_spark, tmp_path, spark_api):
+@pytest.mark.parametrize(
+    ["break_lineage_method"],
+    [
+        ["checkpoint"],
+        ["delta_lake_table"],
+    ],
+    ids=[
+        "checkpoint",
+        "delta_lake_table",
+    ],
+)
+def test_full_example_spark(spark, df_spark, tmp_path, spark_api, break_lineage_method):
     spark.sql("CREATE DATABASE IF NOT EXISTS `1111`")
     # Annoyingly, this needs an independent linker as csv doesn't
     # accept arrays as inputs, which we are adding to df_spark below
-    linker = Linker(df_spark, get_settings_dict(), spark_api)
-
-    # Test that writing to files works as expected
-    def spark_csv_read(x):
-        return linker._db_api.spark.read.csv(x, header=True).toPandas()
-
-    _test_write_functionality(linker, spark_csv_read)
+    df_spark_sdf = spark_api.register(df_spark)
+    linker = Linker(df_spark_sdf, get_settings_dict())
 
     # Convert a column to an array to enable testing intersection
     df_spark = df_spark.withColumn("email", f.array("email"))
@@ -41,7 +49,9 @@ def test_full_example_spark(spark, df_spark, tmp_path, spark_api):
         "probability_two_random_records_match": 0.01,
         "link_type": "dedupe_only",
         "blocking_rules_to_generate_predictions": [
-            {"blocking_rule": "l.surname = r.surname", "salting_partitions": 3},
+            {
+                "blocking_rule": "l.surname = r.surname",
+            },
         ],
         "comparisons": [
             cl.JaroWinklerAtThresholds("first_name", 0.9),
@@ -62,24 +72,22 @@ def test_full_example_spark(spark, df_spark, tmp_path, spark_api):
         "max_iterations": 2,
     }
 
+    df_spark_sdf_profile = spark_api.register(df_spark)
     profile_columns(
-        df_spark,
-        spark_api,
+        df_spark_sdf_profile,
         ["first_name", "surname", "first_name || surname", "concat(city, first_name)"],
     )
 
-    completeness_chart(df_spark, spark_api)
+    completeness_chart(df_spark_sdf_profile)
 
-    linker = Linker(
-        df_spark,
-        settings,
-        SparkAPI(
-            spark_session=spark,
-            break_lineage_method="checkpoint",
-            num_partitions_on_repartition=2,
-            database="1111",
-        ),
+    spark.sql("USE DATABASE `1111`")
+    spark_api_2 = SparkAPI(
+        spark_session=spark,
+        break_lineage_method=break_lineage_method,
+        num_partitions_on_repartition=2,
     )
+    df_spark_sdf_2 = spark_api_2.register(df_spark)
+    linker = Linker(df_spark_sdf_2, settings)
 
     linker.table_management.compute_tf_table("city")
     linker.table_management.compute_tf_table("first_name")
@@ -125,46 +133,50 @@ def test_full_example_spark(spark, df_spark, tmp_path, spark_api):
             StructField("lastname", StringType(), True),
         ]
     )
-    register_roc_data(linker)
 
-    linker.evaluation.accuracy_analysis_from_labels_table("labels")
-
-    record = {
-        "unique_id": 1,
-        "first_name": "John",
-        "surname": "Smith",
-        "dob": "1971-05-24",
-        "city": "London",
-        "email": ["john@smith.net"],
-        "cluster": 10000,
-    }
-
-    linker.inference.find_matches_to_new_records(
-        [record], blocking_rules=[], match_weight_threshold=-10000
+    # make a labels table
+    labels_sdf = df_spark_sdf_2.query_sql(
+        """
+        WITH first_10 AS (
+            SELECT * FROM {this} LIMIT 10
+        )
+        SELECT
+            l.unique_id AS unique_id_l,
+            r.unique_id AS unique_id_r,
+            CAST(l.cluster = r.cluster AS float) AS clerical_match_score
+        FROM
+            first_10 l
+        JOIN
+            first_10 r
+        WHERE
+            l.unique_id < r.unique_id
+        """
     )
+
+    linker.evaluation.accuracy_analysis_from_labels_table(labels_sdf.physical_name)
 
     # Test differing inputs are accepted
     settings["link_type"] = "link_only"
 
-    linker = Linker(
-        [df_spark, df_spark.toPandas()],
-        settings,
-        SparkAPI(
-            spark_session=spark,
-            break_lineage_method="checkpoint",
-            num_partitions_on_repartition=2,
-        ),
+    spark_api_3 = SparkAPI(
+        spark_session=spark,
+        break_lineage_method="checkpoint",
+        num_partitions_on_repartition=2,
     )
+    df_spark_sdf_3 = spark_api_3.register(df_spark)
+    df_spark_sdf_3_alt = spark_api_3.register(df_spark)
+    linker = Linker([df_spark_sdf_3, df_spark_sdf_3_alt], settings)
 
     # Test saving and loading
     path = os.path.join(tmp_path, "model.json")
     linker.misc.save_model_to_json(path)
 
-    Linker(df_spark, settings=path, db_api=spark_api)
+    df_spark_sdf_final = spark_api.register(df_spark)
+    Linker(df_spark_sdf_final, settings=path)
 
 
 @mark_with_dialects_including("spark")
-def test_link_only(spark, df_spark, spark_api):
+def test_link_only(spark, df_spark):
     settings = get_settings_dict()
     settings["link_type"] = "link_only"
     settings["source_dataset_column_name"] = "source_dataset"
@@ -172,39 +184,31 @@ def test_link_only(spark, df_spark, spark_api):
     df_spark_a = df_spark.withColumn("source_dataset", f.lit("my_left_ds"))
     df_spark_b = df_spark.withColumn("source_dataset", f.lit("my_right_ds"))
 
-    linker = Linker(
-        [df_spark_a, df_spark_b],
-        settings,
-        SparkAPI(
-            spark_session=spark,
-            break_lineage_method="checkpoint",
-            num_partitions_on_repartition=2,
-        ),
+    spark_api_link = SparkAPI(
+        spark_session=spark,
+        break_lineage_method="checkpoint",
+        num_partitions_on_repartition=2,
     )
-    df_predict = linker.inference.predict().as_pandas_dataframe()
+    df_spark_a_sdf = spark_api_link.register(df_spark_a)
+    df_spark_b_sdf = spark_api_link.register(df_spark_b)
+    linker = Linker([df_spark_a_sdf, df_spark_b_sdf], settings)
+    sdf_predict = linker.inference.predict()
+    predict_dict = sdf_predict.as_dict()
 
-    assert len(df_predict) == 7257
-    assert set(df_predict.source_dataset_l.values) == {"my_left_ds"}
-    assert set(df_predict.source_dataset_r.values) == {"my_right_ds"}
+    assert len(sdf_predict.as_record_list()) == 7257
+    assert set(predict_dict["source_dataset_l"]) == {"my_left_ds"}
+    assert set(predict_dict["source_dataset_r"]) == {"my_right_ds"}
 
 
-@pytest.mark.parametrize(
-    ("df"),
-    [
-        pytest.param(
-            pd.read_csv("./tests/datasets/fake_1000_from_splink_demos.csv"),
-            id="Spark load from pandas df",
-        )
-    ],
-)
+@pytest.mark.needs_pandas
 @mark_with_dialects_including("spark")
-def test_spark_load_from_file(df, spark, spark_api):
+def test_spark_load_from_pandas(spark_api):
+    import pandas as pd
+
+    df = pd.read_csv("./tests/datasets/fake_1000_from_splink_demos.csv")
     settings = get_settings_dict()
 
-    linker = Linker(
-        df,
-        settings,
-        spark_api,
-    )
+    df_sdf = spark_api.register(df)
+    linker = Linker(df_sdf, settings)
 
-    assert len(linker.inference.predict().as_pandas_dataframe()) == 3167
+    assert len(linker.inference.predict().as_record_list()) == 3167

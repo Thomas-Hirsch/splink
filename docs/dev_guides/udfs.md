@@ -2,7 +2,7 @@
 
 User Defined Functions (UDFs) are functions that can be created to add functionality to a given [SQL backend](../topic_guides/splink_fundamentals/backends/backends.md) that does not already exist. These are particularly useful within Splink as it supports multiple SQL engines each with different inherent functionality. UDFs are an important tool for creating consistent functionality across backends.
 
-For example, DuckDB has an in-built string comparison function for [Jaccard similarity](https://duckdb.org/docs/sql/functions/char.html#text-similarity-functions) whereas Spark SQL doesn't have [an equivalent function](https://spark.apache.org/docs/2.3.0/api/sql/index.html). Therefore, a UDF is required to use functions like [`JaccardAtThresholds()`](../api_docs/comparison_library.md#splink.comparison_library.JaccardAtThresholds) and [`JaccardLevel()`](../api_docs/comparison_level_library.md#splink.comparison_level_library.JaccardLevel) with a Spark backend.
+For example, DuckDB has an in-built string comparison function for [Jaccard similarity](https://duckdb.org/docs/sql/functions/char.html#text-similarity-functions) whereas Spark SQL doesn't have [an equivalent function](https://spark.apache.org/docs/latest/api/sql/index.html). Therefore, a UDF is required to use functions like [`JaccardAtThresholds()`](../api_docs/comparison_library.md#splink.comparison_library.JaccardAtThresholds) and [`JaccardLevel()`](../api_docs/comparison_level_library.md#splink.comparison_level_library.JaccardLevel) with a Spark backend.
 
 ## :simple-apachespark: Spark
 
@@ -31,10 +31,6 @@ Python UDFs can be registered to a DuckDB connection from version 0.8.0 onwards.
 The documentation is [here](https://duckdb.org/docs/api/python/reference/#duckdb.DuckDBPyConnection.create_function), an examples are [here](https://github.com/duckdb/duckdb/pull/7171).  Note that these functions should be registered against the DuckDB connection provided to the linker using `connection.create_function`.
 
 Note that performance will generally be substantially slower than using native DuckDB functions.  Consider using vectorised UDFs were possible - see [here](https://github.com/duckdb/duckdb/pull/7171).
-
-## :simple-amazonaws: Athena
-
-Athena supports [UDFs written in Java](https://docs.aws.amazon.com/athena/latest/ug/querying-udf.html), however these have not yet been implemented in Splink.
 
 ## :simple-sqlite: SQLite
 

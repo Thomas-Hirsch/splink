@@ -1,7 +1,7 @@
-import pandas as pd
+import pyarrow as pa
 import pytest
 
-from splink.blocking_analysis import count_comparisons_from_blocking_rule
+from splink.blocking_analysis import count_comparisons_from_blocking_rules
 from splink.internals.duckdb.database_api import DuckDBAPI
 from splink.internals.input_column import InputColumn
 from splink.internals.misc import calculate_cartesian
@@ -74,33 +74,32 @@ def test_calculate_cartesian_equals_total_number_of_links(
 
     def make_dummy_frame(row_count):
         # don't need meaningful differences as only interested in total count
-        return pd.DataFrame(
-            data={
+        return pa.Table.from_pydict(
+            {
                 "unique_id": range(0, row_count),
-                "forename": "Claire",
-                "surname": "Brown",
+                "forename": ["Claire"] * row_count,
+                "surname": ["Brown"] * row_count,
             },
         )
 
     dfs = list(map(make_dummy_frame, frame_sizes))
 
     db_api = DuckDBAPI()
+    dfs_sdf = [db_api.register(df) for df in dfs]
 
-    res_dict = count_comparisons_from_blocking_rule(
-        table_or_tables=dfs,
-        blocking_rule="1=1",
+    res = count_comparisons_from_blocking_rules(
+        dfs_sdf,
+        blocking_rules="1=1",
         link_type=link_type,
-        db_api=db_api,
         unique_id_column_name="unique_id",
-    )
-
-    res = res_dict["number_of_comparisons_to_be_scored_post_filter_conditions"]
+        record_sample_proportion=1.0,
+    )[0]["marginal_comparison_count"]
 
     # compare with count from each frame
     pipeline = CTEPipeline()
+    dfs_sdf_dict = {df.templated_name: df for df in dfs_sdf}
     sql = vertically_concatenate_sql(
-        input_tables=db_api.register_multiple_tables(dfs),
-        salting_required=False,
+        input_tables=dfs_sdf_dict,
         source_dataset_input_column=InputColumn(
             "source_dataset", sqlglot_dialect_str="duckdb"
         ),
@@ -116,7 +115,7 @@ def test_calculate_cartesian_equals_total_number_of_links(
 
     pipeline.enqueue_sql(sql, "__splink__cartesian_product")
     cartesian_count = db_api.sql_pipeline_to_splink_dataframe(pipeline)
-    row_count_df = cartesian_count.as_record_dict()
+    row_count_df = cartesian_count.as_record_list()
     cartesian_count.drop_table_from_database_and_remove_from_cache()
     # check this is what we expect from input
     assert frame_sizes == [frame["count"] for frame in row_count_df]

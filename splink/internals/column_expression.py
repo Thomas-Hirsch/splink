@@ -4,7 +4,7 @@ import re
 import string
 from copy import copy
 from functools import partial
-from typing import Protocol, Union
+from typing import Literal, Protocol, Union
 
 import sqlglot
 
@@ -17,7 +17,7 @@ from splink.internals.sql_transform import (
 
 
 class ColumnExpressionOperation(Protocol):
-    def __call__(self, name: str, sql_dialect: SplinkDialect) -> str: ...
+    def __call__(self, name: str, *, sql_dialect: SplinkDialect) -> str: ...
 
 
 class ColumnExpression:
@@ -29,7 +29,7 @@ class ColumnExpression:
 
     For example:
         ```py
-        from splink.column_expression import ColumnExpression
+        from splink import ColumnExpression
         col = (
             ColumnExpression("first_name")
             .lower()
@@ -44,7 +44,7 @@ class ColumnExpression:
     level creator into a `Linker`.
     """
 
-    def __init__(self, sql_expression: str, sql_dialect: SplinkDialect = None):
+    def __init__(self, sql_expression: str, sql_dialect: SplinkDialect | None = None):
         self.raw_sql_expression = sql_expression
         self.operations: list[ColumnExpressionOperation] = []
         if sql_dialect is not None:
@@ -201,15 +201,43 @@ class ColumnExpression:
 
         return clone
 
+    def _nullif_dialected(
+        self,
+        name: str,
+        null_value: str,
+        sql_dialect: SplinkDialect,
+    ) -> str:
+        substr_sql = sqlglot.parse_one(f"nullif(___col___, '{null_value}')").sql(
+            dialect=sql_dialect.sqlglot_dialect
+        )
+        return substr_sql.replace("___col___", name)
+
+    def nullif(self, null_value: str) -> "ColumnExpression":
+        """
+        Applies a nullif transform to the input expression,
+        with the specified string value that should be converted to NULL.
+
+        Args:
+            null_value (str): The string literal that should be converted to NULL.
+        """
+        clone = self._clone()
+        op = partial(
+            clone._nullif_dialected,
+            null_value=null_value,
+        )
+        clone.operations.append(op)
+
+        return clone
+
     def _try_parse_date_dialected(
         self,
         name: str,
         sql_dialect: SplinkDialect,
-        date_format: str = None,
+        date_format: str | None = None,
     ) -> str:
         return sql_dialect.try_parse_date(name, date_format=date_format)
 
-    def try_parse_date(self, date_format: str = None) -> "ColumnExpression":
+    def try_parse_date(self, date_format: str | None = None) -> "ColumnExpression":
         """Applies a 'try parse date' transform to the input expression.
 
         Args:
@@ -229,11 +257,13 @@ class ColumnExpression:
         self,
         name: str,
         sql_dialect: SplinkDialect,
-        timestamp_format: str = None,
+        timestamp_format: str | None = None,
     ) -> str:
         return sql_dialect.try_parse_timestamp(name, timestamp_format=timestamp_format)
 
-    def try_parse_timestamp(self, timestamp_format: str = None) -> "ColumnExpression":
+    def try_parse_timestamp(
+        self, timestamp_format: str | None = None
+    ) -> "ColumnExpression":
         """Applies a 'try parse timestamp' transform to the input expression.
 
         Args:
@@ -244,6 +274,36 @@ class ColumnExpression:
         op = partial(
             clone._try_parse_timestamp_dialected,
             timestamp_format=timestamp_format,
+        )
+        clone.operations.append(op)
+
+        return clone
+
+    def _access_extreme_array_element_dialected(
+        self,
+        name: str,
+        sql_dialect: SplinkDialect,
+        first_or_last: Literal["first", "last"],
+    ) -> str:
+        return sql_dialect.access_extreme_array_element(
+            name, first_or_last=first_or_last
+        )
+
+    def access_extreme_array_element(
+        self, first_or_last: Literal["first", "last"]
+    ) -> "ColumnExpression":
+        """
+        Applies a transformation to access either the first or the last element
+        of an array
+
+        Args:
+            first_or_last (str): 'first' for returning the first elemen of the array,
+                'last' for the last element
+        """
+        clone = self._clone()
+        op = partial(
+            clone._access_extreme_array_element_dialected,
+            first_or_last=first_or_last,
         )
         clone.operations.append(op)
 

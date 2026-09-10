@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import pkgutil
 import random
@@ -5,40 +7,55 @@ import string
 from collections import namedtuple
 from datetime import datetime, timedelta
 from math import ceil, inf, log2
-from typing import Iterable
+from textwrap import dedent, indent
+from typing import TYPE_CHECKING, Iterable, TypeVar, overload
 
-import numpy as np
+import duckdb
+
+if TYPE_CHECKING:
+    import pyarrow as pa
+
+T = TypeVar("T")
+U = TypeVar("U")
 
 
-def dedupe_preserving_order(list_of_items):
+def dedupe_preserving_order(list_of_items: list[T]) -> list[T]:
     return list(dict.fromkeys(list_of_items))
 
 
-def prob_to_bayes_factor(prob):
+def prob_to_bayes_factor(prob: float) -> float:
     return prob / (1 - prob) if prob != 1 else inf
 
 
-def prob_to_match_weight(prob):
+def prob_to_match_weight(prob: float) -> float:
     return log2(prob_to_bayes_factor(prob))
 
 
-def match_weight_to_bayes_factor(weight):
+def match_weight_to_bayes_factor(weight: float) -> float:
     return 2**weight
 
 
-def bayes_factor_to_prob(bf):
+def bayes_factor_to_prob(bf: float) -> float:
     return bf / (1 + bf)
 
 
-def interpolate(start, end, num_elements):
+def interpolate(start: float, end: float, num_elements: int) -> list[float]:
     steps = num_elements - 1
     step = (end - start) / steps
     vals = [start + (i * step) for i in range(0, num_elements)]
     return vals
 
 
-def normalise(vals):
-    return [v / sum(vals) for v in vals]
+@overload
+def ensure_is_iterable(a: str) -> list[str]: ...
+
+
+@overload
+def ensure_is_iterable(a: list[T]) -> list[T]: ...
+
+
+@overload
+def ensure_is_iterable(a: Iterable[T] | T) -> Iterable[T]: ...
 
 
 def ensure_is_iterable(a):
@@ -47,23 +64,110 @@ def ensure_is_iterable(a):
     return a if isinstance(a, Iterable) else [a]
 
 
+@overload
+def ensure_is_list(a: str) -> list[str]: ...
+
+
+@overload
+def ensure_is_list(a: dict[str, T]) -> list[dict[str, T]]: ...
+
+
+@overload
+def ensure_is_list(a: Iterable[T]) -> list[T]: ...
+
+
+@overload
+def ensure_is_list(a: list[T] | T) -> list[T]: ...
+
+
 def ensure_is_list(a):
-    return a if isinstance(a, list) else [a]
+    # special case a couple of iterables
+    # for this purpose we want these like singletons
+    if isinstance(a, (dict, str)):
+        return [a]
+    if isinstance(a, Iterable):
+        return list(a)
+    return [a]
 
 
-def ensure_is_tuple(a):
-    if isinstance(a, tuple):
-        return a
-    elif isinstance(a, list):
-        return tuple(a)
-    else:
-        return (a,)
-
-
-def join_list_with_commas_final_and(lst):
+def join_list_with_commas_final_and(lst: list[str]) -> str:
     if len(lst) == 1:
         return lst[0]
     return ", ".join(lst[:-1]) + " and " + lst[-1]
+
+
+def normalise_sql(sql: str) -> str:
+    return dedent(sql).strip()
+
+
+def indent_sql(sql: str, num_spaces: int = 4) -> str:
+    return indent(normalise_sql(sql), " " * num_spaces)
+
+
+def join_sql_with_union_all(sql_fragments: Iterable[str]) -> str:
+    fragments = [normalise_sql(fragment) for fragment in sql_fragments]
+    return "\n\nUNION ALL\n\n".join(fragments)
+
+
+def record_dict_to_list(record_dict: dict[str, list[T]]) -> list[dict[str, T]]:
+    keys = record_dict.keys()
+    return [dict(zip(keys, values)) for values in zip(*record_dict.values())]
+
+
+def list_to_record_dict(list_of_dicts: list[dict[str, T]]) -> dict[str, list[T]]:
+    if not list_of_dicts:
+        return {}
+    keys = list_of_dicts[0].keys()
+    return {k: [d[k] for d in list_of_dicts] for k in keys}
+
+
+@overload
+def to_pyarrow_if_dict(input: dict[T, U]) -> "pa.Table": ...
+
+
+@overload
+def to_pyarrow_if_dict(input: T) -> T: ...
+
+
+def to_pyarrow_if_dict(input):
+    import pyarrow as pa
+
+    if isinstance(input, dict):
+        input = pa.Table.from_pydict(input)
+    return input
+
+
+@overload
+def to_pyarrow_if_list_or_tuple(input: list[T]) -> "pa.Table": ...
+
+
+@overload
+def to_pyarrow_if_list_or_tuple(input: tuple[T]) -> "pa.Table": ...
+
+
+@overload
+def to_pyarrow_if_list_or_tuple(input: T) -> T: ...
+
+
+def to_pyarrow_if_list_or_tuple(input):
+    import pyarrow as pa
+
+    if isinstance(input, (list, tuple)):
+        # pyarrow method works happily with tuples
+        input = pa.Table.from_pylist(input)
+    return input
+
+
+@overload
+def to_pyarrow_if_list_tuple_or_dict(input: list[T] | dict[T, U]) -> "pa.Table": ...
+
+
+@overload
+def to_pyarrow_if_list_tuple_or_dict(input: T) -> T: ...
+
+
+def to_pyarrow_if_list_tuple_or_dict(input):
+    return to_pyarrow_if_dict(to_pyarrow_if_list_or_tuple(input))
 
 
 class EverythingEncoder(json.JSONEncoder):
@@ -81,19 +185,25 @@ class EverythingEncoder(json.JSONEncoder):
     # Note that the default method is only called for data types that are
     # NOT natively serializable.  The 'encode' method can be used
     # for natively serializable data
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.bool_):
-            return bool(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
+    def default(self, o):
         try:
-            return json.JSONEncoder.default(self, obj)
+            import numpy as np
+        except ModuleNotFoundError:
+            pass
+        else:
+            if isinstance(o, np.integer):
+                return int(o)
+            elif isinstance(o, np.floating):
+                return float(o)
+            elif isinstance(o, np.bool_):
+                return bool(o)
+            elif isinstance(o, np.ndarray):
+                return o.tolist()
+
+        try:
+            return json.JSONEncoder.default(self, o)
         except TypeError:
-            return obj.__str__()
+            return o.__str__()
 
 
 def calculate_cartesian(df_rows, link_type):
@@ -105,7 +215,7 @@ def calculate_cartesian(df_rows, link_type):
     if link_type == "link_only":
         if len(n) <= 1:
             raise ValueError(
-                "if 'link_type 'is 'link_only' should have " "at least two input frames"
+                "if 'link_type 'is 'link_only' should have at least two input frames"
             )
         # sum of pairwise product can be found as
         # half of [(sum)-squared - (sum of squares)]
@@ -116,8 +226,7 @@ def calculate_cartesian(df_rows, link_type):
     if link_type == "dedupe_only":
         if len(n) > 1:
             raise ValueError(
-                "if 'link_type' is 'dedupe_only' should have only "
-                "a single input frame"
+                "if 'link_type' is 'dedupe_only' should have only a single input frame"
             )
         return n[0]["count"] * (n[0]["count"] - 1) / 2
 
@@ -126,22 +235,23 @@ def calculate_cartesian(df_rows, link_type):
         return total_rows * (total_rows - 1) / 2
 
     raise ValueError(
-        "'link_type' should be either 'link_only', 'dedupe_only', "
-        "or 'link_and_dedupe'"
+        "'link_type' should be either 'link_only', 'dedupe_only', or 'link_and_dedupe'"
     )
 
 
-def major_minor_version_greater_equal_than(this_version, base_comparison_version):
-    this_version = this_version.split(".")[:2]
-    this_version = [v.zfill(10) for v in this_version]
+def major_minor_version_greater_equal_than(
+    this_version: str, base_comparison_version: str
+) -> bool:
+    this_version_parts = this_version.split(".")[:2]
+    this_version_parts = [v.zfill(10) for v in this_version]
 
-    base_version = base_comparison_version.split(".")[:2]
-    base_version = [v.zfill(10) for v in base_version]
+    base_version_parts = base_comparison_version.split(".")[:2]
+    base_version_parts = [v.zfill(10) for v in base_version_parts]
 
-    return this_version >= base_version
+    return this_version_parts >= base_version_parts
 
 
-def ascii_uid(len):
+def ascii_uid(len: int) -> str:
     # use only lowercase as case-sensitivity is an issue in e.g. postgres
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=len))
 
@@ -183,3 +293,84 @@ def read_resource(path: str) -> str:
     if (resource_data := pkgutil.get_data("splink", path)) is None:
         raise FileNotFoundError(f"Could not locate splink resource at: {path}")
     return resource_data.decode("utf-8")
+
+
+def threshold_args_to_match_weight(
+    threshold_match_probability: float | None, threshold_match_weight: float | None
+) -> float | None:
+    if threshold_match_probability is not None and threshold_match_weight is not None:
+        raise ValueError(
+            "Cannot provide both threshold_match_probability and "
+            "threshold_match_weight. Please specify only one."
+        )
+
+    if threshold_match_probability is not None:
+        if threshold_match_probability == 0:
+            return None
+        return prob_to_match_weight(threshold_match_probability)
+
+    if threshold_match_weight is not None:
+        return threshold_match_weight
+
+    return None
+
+
+def threshold_args_to_match_prob(
+    threshold_match_probability: float | None, threshold_match_weight: float | None
+) -> float | None:
+    if threshold_match_probability is not None and threshold_match_weight is not None:
+        raise ValueError(
+            "Cannot provide both threshold_match_probability and "
+            "threshold_match_weight. Please specify only one."
+        )
+
+    if threshold_match_probability is not None:
+        return threshold_match_probability
+
+    if threshold_match_weight is not None:
+        return bayes_factor_to_prob(
+            match_weight_to_bayes_factor(threshold_match_weight)
+        )
+
+    return None
+
+
+def threshold_args_to_match_prob_list(
+    match_probability_thresholds: list[float] | None,
+    match_weight_thresholds: list[float] | None,
+) -> list[float] | None:
+    if match_probability_thresholds is not None and match_weight_thresholds is not None:
+        raise ValueError(
+            "Cannot provide both match_probability_thresholds and "
+            "match_weight_thresholds. Please specify only one."
+        )
+
+    if match_probability_thresholds is not None:
+        return sorted(match_probability_thresholds)
+
+    if match_weight_thresholds is not None:
+        return sorted(
+            bayes_factor_to_prob(match_weight_to_bayes_factor(w))
+            for w in match_weight_thresholds
+        )
+
+    return None
+
+
+def is_pandas_frame(obj: object) -> bool:
+    try:
+        import pandas as pd
+    except ModuleNotFoundError:
+        return False
+    return isinstance(obj, pd.DataFrame)
+
+
+def show(table: pa.Table, rows: int = 10, max_width: int = 1000) -> None:
+    con = duckdb.connect()
+
+    con.from_arrow(table).limit(rows).show(
+        max_rows=rows,
+        max_width=max_width,
+        max_col_width=40,
+        null_value="NULL",
+    )

@@ -2,8 +2,6 @@
 tags:
   - Performance
   - DuckDB
-  - Salting
-  - Parallelism
 ---
 
 ## Optimising DuckDB jobs
@@ -15,75 +13,12 @@ It is assumed readers have already read the more general [guide to linking big d
 ## Summary:
 
 - From `splink==3.9.11` onwards, DuckDB generally parallelises jobs well, so you should see 100% usage of all CPU cores for the main Splink operations (parameter estimation and prediction)
-- In some cases `predict()` needs salting on `blocking_rules_to_generate_predictions` to achieve 100% CPU use. You're most likely to need this in the following scenarios:
-    - Very high core count machines
-    - Splink models that contain a small number of `blocking_rules_to_generate_predictions`
-    - Splink models that have a relatively small number of input rows (less than around 500k)
-- If you are facing memory issues with DuckDB, you have the option of using an on-disk database.
-- Reducing the amount of parallelism by removing salting can also sometimes reduce memory usage
+- If you are facing memory issues with DuckDB, you have the option of using an on-disk database, or of chunking `predict()` so that only part of the result is computed at a time.
+- In some cloud environments, the environment may not correctly report the amount of RAM available, so if you're getting out of memory errors, you should explicitly [set the `memory_limit` pragma](https://duckdb.org/docs/current/configuration/pragmas#memory-limit) when creating the DuckDB connection.
 
 You can find a blog post with formal benchmarks of DuckDB performance on a variety of machine types [here](https://www.robinlinacre.com/fast_deduplication/).
 
 ## Configuration
-
-### Ensuring 100% CPU usage across all cores on `predict()`
-
-The aim is for overall parallelism of the predict() step to closely align to the number of thread/vCPU cores you have:
-- If parallelism is too low, you won't use all your threads
-- If parallelism is too high, runtime will be longer.
-
-The number of CPU cores used is given by the following formula:
-
-$\text{base parallelism} = \frac{\text{number of input rows}}{122,880}$
-
-$\text{blocking rule parallelism}$
-
-$= \text{count of blocking rules} \times$ $\text{number of salting partitions per blocking rule}$
-
-$\text{overall parallelism} = \text{base parallelism} \times \text{blocking rule parallelism}$
-
-If overall parallelism is less than the total number of threads, then you won't achieve 100% CPU usage.
-
-#### Example
-
-Consider a deduplication job with 1,000,000 input rows, on a machine with 32 cores (64 threads)
-
-In our Splink suppose we set:
-
-```python
-settings =  {
-    ...
-    "blocking_rules_to_generate_predictions" ; [
-        block_on(["first_name"], salting_partitions=2),
-        block_on(["dob"], salting_partitions=2),
-        block_on(["surname"], salting_partitions=2),
-    ]
-    ...
-}
-```
-
-Then we have:
-
-- Base parallelism of 9.
-- 3 blocking rules
-- 2 salting partitions per blocking rule
-
-We therefore have paralleism of $9 \times 3 \times 2 = 54$, which is less than the 64 threads, and therefore we won't quite achieve full parallelism.
-
-### Generalisation
-
-The above formula for overall parallelism assumes all blocking rules have the same number of salting partitions, which is not necessarily the case. In the more general case of variable numbers of salting partitions, the formula becomes
-
-$$
-\text{overall parallelism} =
-\text{base parallelism} \times \text{total number of salted blocking partitions across all blocking rules}
-$$
-
-So for example, with two blocking rules, if the first has 2 salting partitions, and the second has 10 salting partitions, when we would multiply base parallelism by 12.
-
-This may be useful in the case one of the blocking rules produces more comparisons than another: the 'bigger' blocking rule can be salted more.
-
-For further information about how parallelism works in DuckDB, including links to relevant DuckDB documentation and discussions, see [here](https://github.com/moj-analytical-services/splink/discussions/1830).
 
 ### Running out of memory
 
@@ -99,18 +34,18 @@ Use the special `:temporary:` connection built into Splink that creates a tempor
 
 ```python
 
-linker = Linker(
-    df, settings, DuckDBAPI(connection=":temporary:")
-)
+db_api = DuckDBAPI(connection=":temporary:")
+df_sdf = db_api.register(df, dataset_display_name="my_data")
+linker = Linker(df_sdf, settings)
 ```
 
 Use an on-disk database:
 
 ```python
 con = duckdb.connect(database='my-db.duckdb')
-linker = Linker(
-    df, settings, DuckDBAPI(connection=con)
-)
+db_api = DuckDBAPI(connection=con)
+df_sdf = db_api.register(df, dataset_display_name="my_data")
+linker = Linker(df_sdf, settings)
 ```
 
 Use an in-memory database, but ensure it can spill to disk:
@@ -119,13 +54,81 @@ Use an in-memory database, but ensure it can spill to disk:
 con = duckdb.connect(":memory:")
 
 con.execute("SET temp_directory='/path/to/temp';")
-linker = Linker(
-    df, settings, DuckDBAPI(connection=con)
-)
+db_api = DuckDBAPI(connection=con)
+df_sdf = db_api.register(df, dataset_display_name="my_data")
+linker = Linker(df_sdf, settings)
 ```
 
 See also [this section](https://duckdb.org/docs/guides/performance/how-to-tune-workloads.html#larger-than-memory-workloads-out-of-core-processing) of the DuckDB docs
 
-#### Reducing salting
+## Avoiding repeated computation in comparisons
 
-Empirically we have noticed that there is a tension between parallelism and total memory usage. If you're running out of memory, you could consider reducing parallelism.
+When you use a fuzzy comparison such as `JaroWinklerAtThresholds` with several thresholds, Splink generates a SQL `CASE` statement that calls the comparison function once for each threshold:
+
+```sql
+CASE
+    WHEN "name_l" IS NULL OR "name_r" IS NULL THEN -1
+    WHEN "name_l" = "name_r" THEN 4
+    WHEN jaro_winkler_similarity("name_l", "name_r") >= 0.9 THEN 3
+    WHEN jaro_winkler_similarity("name_l", "name_r") >= 0.8 THEN 2
+    WHEN jaro_winkler_similarity("name_l", "name_r") >= 0.7 THEN 1
+    ELSE 0
+END
+```
+
+This suggests an obvious optimisation: compute the `jaro_winkler_similarity` value once and reuse it across thresholds.  This is sometimes called 'hoisting'.
+
+DuckDB's optimiser does attempt to do this, but it will not usually work for Splink's `CASE` statements.
+
+This is deliberate: DuckDB avoids hoisting when an earlier branch of the `CASE` is 'protecting' a later branch from running. Splink's null-handling branch is exactly such a case: the later branches may produce an error if one side is null.
+
+As a motivating example:
+
+```python
+import duckdb
+duckdb.sql("SELECT jaccard('', 'abc')")
+# InvalidInputException: Jaccard Function: An argument too short!
+```
+
+If DuckDB hoisted `jaccard(...)` out of the `CASE` and evaluated it for every row, this query would error on the blank inputs that the null/blank check was there to skip. For this reason Splink cannot safely enable the optimisation for you automatically, and DuckDB is right not to apply it by default.
+
+### Enabling the optimisation yourself
+
+If you know your comparison function is safe to evaluate on every row (i.e. will not error), you can rewrite the comparison so the function appears in the first branch of the `CASE`. DuckDB will then recognise it's safe to hoist, compute it once, and reuse the result across all thresholds.
+
+For example, `jaro_winkler_similarity` and `levenshtein` are safe in this way.
+
+The trick is to move the function into the null level using a sentinel comparison that can never be true. Because Jaro-Winkler only returns values in the range `[0, 1]`, the test `= -100` never matches, so the rows captured by the null level are exactly the same as a plain `IS NULL` check:
+
+```python
+import splink.comparison_level_library as cll
+import splink.comparison_library as cl
+
+name_comparison = cl.CustomComparison(
+    output_column_name="name",
+    comparison_levels=[
+        # The function appears in the first branch, so DuckDB computes it once.
+        # `= -100` is never true, so the null logic is unchanged.
+        cll.CustomLevel(
+            "jaro_winkler_similarity(name_l, name_r) = -100 "
+            "OR name_l IS NULL OR name_r IS NULL",
+            label_for_charts="name is NULL",
+        ).configure(is_null_level=True),
+        cll.ExactMatchLevel("name"),
+        cll.JaroWinklerLevel("name", 0.9),
+        cll.JaroWinklerLevel("name", 0.8),
+        cll.JaroWinklerLevel("name", 0.7),
+        cll.ElseLevel(),
+    ],
+)
+```
+
+This produces identical results to `cl.JaroWinklerAtThresholds("name", [0.9, 0.8, 0.7])`, but DuckDB now evaluates `jaro_winkler_similarity` once per row instead of once per threshold. The more thresholds you use, and the more expensive the function, the larger the saving.
+
+Setting `.configure(is_null_level=True)` is important: it tells Splink to continue treating this level as the null level, so that — exactly as for a standard `NullLevel` — its `m` and `u` values are not estimated during training.
+
+For more information, see [here](https://github.com/moj-analytical-services/splink/pull/2738)
+
+#### Chunking `predict()`
+
+If the memory pressure comes from the `predict()` step, you can split it into smaller pieces using the `num_chunks_left` and `num_chunks_right` arguments. Splink processes the chunks in series and unions the results, so only a fraction of the blocked pairs are materialised at any one time. This also gives progress reporting on long-running jobs. See the [scaling up to large datasets tutorial](../../demos/tutorials/09_scaling_up_techniques.ipynb) for details.

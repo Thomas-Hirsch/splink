@@ -2,7 +2,6 @@
 tags:
   - Performance
   - Spark
-  - Salting
   - Parallelism
 ---
 
@@ -22,13 +21,13 @@ It is assumed readers have already read the more general [guide to linking big d
 For a cluster with 10 CPUs, that outputs about 8GB of data in parquet format, the following setup may be appropriate:
 
 ```python
+from splink import SparkAPI
+
 spark.conf.set("spark.default.parallelism", "50")
 spark.conf.set("spark.sql.shuffle.partitions", "50")
 
-linker = Linker(
-    person_standardised_nodes,
-    settings,
-    db_api=spark_api,
+db_api = SparkAPI(
+    spark_session=spark,
     break_lineage_method="parquet",
     num_partitions_on_repartition=80,
 )
@@ -45,17 +44,17 @@ Splink will automatically break lineage in sensible places. We have found in pra
 
 You can do this using the `break_lineage_method` parameter as follows:
 
-```
-linker = Linker(
-    person_standardised_nodes,
-    settings,
-    db_api=db_api,
-    break_lineage_method="parquet"
+```python
+from splink import SparkAPI
+
+db_api = SparkAPI(
+    spark_session=spark,
+    break_lineage_method="parquet",
+    num_partitions_on_repartition=80,
 )
-
 ```
 
-Other options are `checkpoint` and `persist`. For different Spark setups, particularly if you have fast local storage, you may find these options perform better.
+Other options are `checkpoint` and `persist`, plus a [few others](https://github.com/moj-analytical-services/splink/blob/2ed9f8bf2a21fffafa14e3bb848aa69370043e33/splink/internals/spark/database_api.py#L34) for databricks. For different Spark setups, particularly if you have fast local storage, you may find these options perform better.
 
 ## Spark Parallelism
 
@@ -76,15 +75,15 @@ sc = SparkContext.getOrCreate(conf=conf)
 spark = SparkSession(sc)
 ```
 
-In general, increasing parallelism will make Spark 'chunk' your job into a larger amount of smaller tasks. This may solve memory issues. But note there is a tradeoff here: if you increase parallelism too high, Spark may take too much time scheduling large numbers of tasks, and may even run out of memory performing this work. See [here](https://stackoverflow.com/a/58251799/1779128). Also note that when blocking, jobs cannot be split into a large number of tasks than the cardinality of the blocking rule. For example, if you block on month of birth, this will be split into 12 tasks, irrespective of the parallelism setting. See [here](https://stackoverflow.com/questions/61073551/increase-parallelism-of-reading-a-parquet-file-spark-optimize-self-join/61077643#61077643). You can use salting (below) to partially address this limitation.
+In general, increasing parallelism will make Spark 'chunk' your job into a larger amount of smaller tasks. This may solve memory issues. But note there is a tradeoff here: if you increase parallelism too high, Spark may take too much time scheduling large numbers of tasks, and may even run out of memory performing this work. See [here](https://stackoverflow.com/a/58251799/1779128). Also note that when blocking, jobs cannot be split into a large number of tasks than the cardinality of the blocking rule. For example, if you block on month of birth, this will be split into 12 tasks, irrespective of the parallelism setting. See [here](https://stackoverflow.com/questions/61073551/increase-parallelism-of-reading-a-parquet-file-spark-optimize-self-join/61077643#61077643).
 
 ## Repartition after blocking
 
 For some jobs, setting `repartition_after_blocking=True` when you initialise the `SparkAPI` may improve performance.
 
-## Salting
+## Chunking large prediction jobs
 
-For very large jobs, you may find that [salting your blocking keys](./salting.md) results in faster run times.
+For very large linkages, you can split `predict()` into smaller pieces using the `num_chunks_left` and `num_chunks_right` arguments. Splink processes the chunks one at a time and unions the results, which lowers the peak memory required for any single chunk and logs progress as the job runs. Individual chunks can also be computed independently with `predict_chunk()`. See the [scaling up to large datasets tutorial](../../demos/tutorials/09_scaling_up_techniques.ipynb) for details.
 
 ## General Spark config
 

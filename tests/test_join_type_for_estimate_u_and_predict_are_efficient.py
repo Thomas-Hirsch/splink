@@ -1,7 +1,6 @@
 import logging
 import re
-
-import pandas as pd
+from typing import List
 
 import splink.internals.comparison_library as cl
 from splink.internals.duckdb.database_api import DuckDBAPI
@@ -91,10 +90,24 @@ data_three = [
 ]
 
 
-def test_dedupe_only():
-    df_one = pd.DataFrame(data_one)
+def _assert_self_join_logged(log_output: str, table_name: str) -> None:
+    pattern = (
+        rf"from {re.escape(table_name)}(?:_[a-z0-9]+)? as l inner join "
+        rf"{re.escape(table_name)}(?:_[a-z0-9]+)? as r"
+    )
+    assert re.search(pattern, log_output)
 
-    log_list = []
+
+def _assert_join_logged(log_output: str, left_table: str, right_table: str) -> None:
+    pattern = (
+        rf"from {re.escape(left_table)}(?:_[a-z0-9]+)? as l inner join "
+        rf"{re.escape(right_table)}(?:_[a-z0-9]+)? as r"
+    )
+    assert re.search(pattern, log_output)
+
+
+def test_dedupe_only():
+    log_list: List[str] = []
     handler = ListHandler(log_list)
     logger.addHandler(handler)
 
@@ -114,11 +127,11 @@ def test_dedupe_only():
         ],
     }
     db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one)
     linker = Linker(
-        df_one,
+        df_one_sdf,
         settings,
-        db_api=db_api,
-        set_up_basic_logging=False,
+        log_level=None,
     )
     logging.getLogger("splink").setLevel(1)
 
@@ -126,10 +139,7 @@ def test_dedupe_only():
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
 
-    assert (
-        "from __splink__df_concat_sample as l inner join __splink__df_concat_sample as r"  # noqa: E501
-        in all_log_messages
-    )
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat_sample")
 
     handler.log_list.clear()
 
@@ -138,17 +148,11 @@ def test_dedupe_only():
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
 
-    assert (
-        "from __splink__df_concat_with_tf as l inner join __splink__df_concat_with_tf as r"  # noqa: E501
-        in all_log_messages
-    )
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat")
 
 
-def test_link_and_dedupe():
-    df_one = pd.DataFrame(data_one)
-    df_two = pd.read_csv("tests/datasets/fake_1000_from_splink_demos.csv")
-
-    log_list = []
+def test_link_and_dedupe(fake_1000):
+    log_list: List[str] = []
     handler = ListHandler(log_list)
     logger.addHandler(handler)
     settings = {
@@ -167,12 +171,12 @@ def test_link_and_dedupe():
         ],
     }
     db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one, dataset_display_name="df_one")
+    df_two_sdf = db_api.register(fake_1000, dataset_display_name="df_two")
     linker = Linker(
-        [df_one, df_two],
+        [df_one_sdf, df_two_sdf],
         settings,
-        db_api=db_api,
-        input_table_aliases=["df_one", "df_two"],
-        set_up_basic_logging=False,
+        log_level=None,
     )
 
     handler.log_list.clear()
@@ -181,10 +185,7 @@ def test_link_and_dedupe():
 
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
-    assert (
-        "from __splink__df_concat_sample as l inner join __splink__df_concat_sample as r"  # noqa: E501
-        in all_log_messages
-    )
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat_sample")
 
     log_list.clear()
 
@@ -193,17 +194,11 @@ def test_link_and_dedupe():
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
 
-    assert (
-        "from __splink__df_concat_with_tf as l inner join __splink__df_concat_with_tf as r"  # noqa: E501
-        in all_log_messages
-    )
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat")
 
 
-def test_link_only_two():
-    df_one = pd.DataFrame(data_one)
-    df_two = pd.read_csv("tests/datasets/fake_1000_from_splink_demos.csv")
-
-    log_list = []
+def test_link_only_two(fake_1000):
+    log_list: List[str] = []
     handler = ListHandler(log_list)
     logger.addHandler(handler)
 
@@ -223,12 +218,12 @@ def test_link_only_two():
         ],
     }
     db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one, dataset_display_name="df_one")
+    df_two_sdf = db_api.register(fake_1000, dataset_display_name="df_two")
     linker = Linker(
-        [df_one, df_two],
+        [df_one_sdf, df_two_sdf],
         settings,
-        db_api=db_api,
-        input_table_aliases=["df_one", "df_two"],
-        set_up_basic_logging=False,
+        log_level=None,
     )
 
     log_list.clear()
@@ -237,9 +232,10 @@ def test_link_only_two():
 
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
-    assert (
-        "from __splink__df_concat_sample_left as l inner join __splink__df_concat_sample_right as r"  # noqa: E501
-        in all_log_messages
+    _assert_join_logged(
+        all_log_messages,
+        "__splink__df_concat_sample_left",
+        "__splink__df_concat_sample_right",
     )
 
     log_list.clear()
@@ -249,18 +245,35 @@ def test_link_only_two():
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
 
+    _assert_join_logged(
+        all_log_messages,
+        "__splink__df_concat_left",
+        "__splink__df_concat_right",
+    )
     assert (
-        "from __splink__df_concat_with_tf_left as l inner join __splink__df_concat_with_tf_right as r"  # noqa: E501
+        "__splink__df_concat_left as ( select 'df_one' as "
+        '"source_dataset", "unique_id", "first_name", "surname" from df_one )'
         in all_log_messages
     )
+    assert (
+        "__splink__df_concat_right as ( select 'df_two' as "
+        '"source_dataset", "unique_id", "first_name", "surname" from df_two )'
+        in all_log_messages
+    )
+    assert (
+        "__splink__df_concat_left as ( select * from __splink__df_concat"  # noqa: E501
+        not in all_log_messages
+    )
+    assert (
+        "__splink__df_concat_right as ( select * from __splink__df_concat"  # noqa: E501
+        not in all_log_messages
+    )
+    assert "select min(" not in all_log_messages
+    assert "select max(" not in all_log_messages
 
 
-def test_link_only_three():
-    df_one = pd.DataFrame(data_one)
-    df_two = pd.read_csv("tests/datasets/fake_1000_from_splink_demos.csv")
-    df_three = pd.DataFrame(data_three)
-
-    log_list = []
+def test_link_only_three(fake_1000):
+    log_list: List[str] = []
     handler = ListHandler(log_list)
     logger.addHandler(handler)
 
@@ -280,12 +293,13 @@ def test_link_only_three():
         ],
     }
     db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one, dataset_display_name="df_one")
+    df_two_sdf = db_api.register(fake_1000, dataset_display_name="df_two")
+    df_three_sdf = db_api.register(data_three, dataset_display_name="df_three")
     linker = Linker(
-        [df_one, df_two, df_three],
+        [df_one_sdf, df_two_sdf, df_three_sdf],
         settings,
-        db_api=db_api,
-        input_table_aliases=["df_one", "df_two", "df_three"],
-        set_up_basic_logging=False,
+        log_level=None,
     )
 
     log_list.clear()
@@ -294,10 +308,7 @@ def test_link_only_three():
 
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
-    assert (
-        "from __splink__df_concat_sample as l inner join __splink__df_concat_sample as r"  # noqa: E501
-        in all_log_messages
-    )
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat_sample")
 
     log_list.clear()
 
@@ -306,7 +317,4 @@ def test_link_only_three():
     all_log_messages = "\n".join(log_list)
     all_log_messages = re.sub(r"\s+", " ", all_log_messages)
 
-    assert (
-        "from __splink__df_concat_with_tf as l inner join __splink__df_concat_with_tf as r"  # noqa: E501
-        in all_log_messages
-    )
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat")

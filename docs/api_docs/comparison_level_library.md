@@ -9,7 +9,7 @@ tags:
     handler: python
     options:
       show_root_heading: false
-      show_root_toc: false
+      show_root_toc_entry: false
       show_source: false
       members_order: source
       inherited_members: false
@@ -18,9 +18,9 @@ tags:
         - "!^create_sql$"  # Exclude the create_sql method
 
 
-## AbsoluteDateDifferenceAtThresholds
+## AbsoluteDateDifferenceLevel
 
-An alias of [AbsoluteTimeDifferenceAtThresholds](./comparison_level_library.html#splink.comparison_level_library.AbsoluteTimeDifferenceLevel).
+An alias of [AbsoluteTimeDifferenceLevel](./comparison_level_library.md#splink.comparison_level_library.AbsoluteTimeDifferenceLevel).
 
 ## Configuring comparisons
 
@@ -30,6 +30,6 @@ Note that all comparison levels have a `.configure()` method as follows:
     handler: python
     options:
       show_root_heading: false
-      show_root_toc: true
+      show_root_toc_entry: true
       show_source: false
 

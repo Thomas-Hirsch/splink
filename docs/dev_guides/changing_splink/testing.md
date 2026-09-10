@@ -20,19 +20,19 @@ Splink tests can be broadly categorised into three sets:
 
 To run tests locally against duckdb only (the default) run:
 ```sh
-poetry run pytest tests/
+uv run pytest tests/
 ```
 
 To run a single test file, append the filename to the `tests/` folder call, for example:
 
 ```sh
-poetry run pytest tests/test_u_train.py
+uv run pytest tests/test_u_train.py
 ```
 
 or for a single test, additionally append the test name after a pair of colons, as:
 
 ```sh
-poetry run pytest tests/test_u_train.py::test_u_train_multilink
+uv run pytest tests/test_u_train.py::test_u_train_multilink
 ```
 
 ??? tip "Further useful pytest options"
@@ -43,7 +43,7 @@ poetry run pytest tests/test_u_train.py::test_u_train_multilink
     * `-q` for quiet mode, where output is extremely minimal
     * `-x` to fail on first error/failure rather than continuing to run all selected tests
         *
-    * `-m some_mark` run only those tests marked with `some_mark` - see [below](#selecting-sets-of-tests) for useful options here
+    * `-m some_mark` run only those tests marked with `some_mark` - see [below](#running-tests-for-specific-backends-or-backend-groups) for useful options here
 
     For instance usage might be:
     ```sh
@@ -73,18 +73,18 @@ The available options are:
 ##### Run core tests
 Option for running only the backend-independent 'core' tests:
 
-* `poetry run pytest tests/ -m core` - run only the 'core' tests, meaning those without dialect-dependence. In practice this means any test that hasn't been decorated using `mark_with_dialects_excluding` or `mark_with_dialects_including`.
+* `uv run pytest tests/ -m core` - run only the 'core' tests, meaning those without dialect-dependence. In practice this means any test that hasn't been decorated using `mark_with_dialects_excluding` or `mark_with_dialects_including`.
 
 ##### Run tests on a specific backend
-Options for running tests on one backend only - this includes tests written [specifically for that backend](#tests-for-specific-backends), as well as [backend-agnostic tests](#backend-agnostic-testing) supported for that backend.
+Options for running tests on one backend only - this includes tests written [specifically for that backend](#backend-specific-tests), as well as [backend-agnostic tests](#backend-agnostic-testing) supported for that backend.
 
-* `poetry run pytest tests/ -m duckdb` - run all `duckdb` tests, and all `core` tests
+* `uv run pytest tests/ -m duckdb` - run all `duckdb` tests, and all `core` tests
     * & similarly for other dialects
-* `poetry run pytest tests/ -m duckdb_only` - run all `duckdb` tests only, and _not_ the `core` tests
+* `uv run pytest tests/ -m duckdb_only` - run all `duckdb` tests only, and _not_ the `core` tests
     * & similarly for other dialects
 
 ##### Run tests across multiple backends
-Options for running tests on multiple backends (including all backends) - this includes tests written [specifically for those backends](#tests-for-specific-backends), as well as [backend-agnostic tests](#backend-agnostic-testing) supported for those backends.
+Options for running tests on multiple backends (including all backends) - this includes tests written [specifically for those backends](#backend-specific-tests), as well as [backend-agnostic tests](#backend-agnostic-testing) supported for those backends.
 
  * `pytest tests/ -m default` or equivalently `pytest tests/` - run all tests in the `default` group. The `default` group consists of the `core` tests, and those dialects in the `default` group - currently `spark` and `duckdb`.
     * Other groups of dialects can be added and will similarly run with `pytest tests/ -m new_dialect_group`. Dialects within the current scope of testing and the groups they belong to are defined in the `dialect_groups` dictionary in [tests/decorator.py](https://github.com/moj-analytical-services/splink/blob/master/tests/decorator.py)
@@ -154,7 +154,7 @@ Splink utilises [GitHub actions](https://docs.github.com/en/actions) to run test
 Core tests are treated the same way as ordinary pytest tests. Any test is marked as `core` by default, and will only be excluded from being a core test if it is decorated using either:
 
 * `@mark_with_dialects_excluding` for [backend-agnostic tests](#backend-agnostic-testing), or
-* `@mark_with_dialects_including` for [backend-specific tests](#tests-for-specific-backends)
+* `@mark_with_dialects_including` for [backend-specific tests](#backend-specific-tests)
 
 from the [test decorator file](https://github.com/moj-analytical-services/splink/blob/master/tests/decorator.py).
 
@@ -182,11 +182,7 @@ def test_feature_that_works_for_all_backends(test_helpers, dialect, some_other_t
             block_on("first_name"),
         ],
     )
-    linker = helper.Linker(
-        df,
-        settings,
-        **helper.extra_linker_args(),
-    )
+    linker = helper.linker_with_registration(df, settings)
 
 
     # and then some actual testing logic
@@ -235,9 +231,9 @@ Each helper has the same set of methods and properties, which encapsulate _all_ 
 
 Here we are now actually using a method of the test helper - in this case we are loading a table from a csv to the database and returning it in a form suitable for passing to a Splink linker.
 
-Finally we instantiate the linker, passing any default set of extra arguments provided by the helper, which some dialects require.
+Finally we instantiate the linker using the helper's `linker_with_registration` method, which registers the input data with the appropriate backend and returns a `Linker`.
 ```py linenums="18"
-    linker = helper.Linker(df, settings_dict, **helper.extra_linker_args())
+    linker = helper.linker_with_registration(df, settings)
 ```
 
 

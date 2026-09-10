@@ -3,16 +3,15 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Any, List, Literal, Sequence, TypedDict
+from typing import Any, List, Literal, TypedDict
 
-from splink.internals.blocking import (
-    BlockingRule,
-    SaltedBlockingRule,
-    blocking_rule_to_obj,
-)
-from splink.internals.charts import m_u_parameters_chart, match_weights_chart
+from splink.internals.blocking import BlockingRule
+from splink.internals.charts import MatchWeightsChart, MUParametersChart
 from splink.internals.comparison import Comparison
-from splink.internals.comparison_level import ComparisonLevel
+from splink.internals.comparison_level import (
+    ComparisonLevel,
+    ComparisonLevelDetailedRecord,
+)
 from splink.internals.dialects import SplinkDialect
 from splink.internals.input_column import InputColumn
 from splink.internals.misc import (
@@ -31,9 +30,29 @@ class ComparisonAndLevelDict(TypedDict):
     comparison: Comparison
 
 
+@dataclass
+class ModelParameterDetailedRecord(ComparisonLevelDetailedRecord):
+    probability_two_random_records_match: float
+    comparison_sort_order: int
+
+    @classmethod
+    def from_cl_detailed_record(
+        cls,
+        cl_rec: ComparisonLevelDetailedRecord,
+        *,
+        probability_two_random_records_match: float,
+        comparison_sort_order: int,
+    ) -> ModelParameterDetailedRecord:
+        return cls(
+            **asdict(cl_rec),
+            probability_two_random_records_match=probability_two_random_records_match,
+            comparison_sort_order=comparison_sort_order,
+        )
+
+
 @dataclass(frozen=True)
 class ColumnInfoSettings:
-    bayes_factor_column_prefix: str
+    match_weight_column_prefix: str
     term_frequency_adjustment_column_prefix: str
     comparison_vector_value_column_prefix: str
     unique_id_column_name: str
@@ -45,6 +64,14 @@ class ColumnInfoSettings:
     def sqlglot_dialect(self):
         return SplinkDialect.from_string(self.sql_dialect).sqlglot_dialect
 
+    def _input_column(self, name: str) -> InputColumn:
+        """Create an InputColumn with this ColumnInfoSettings' dialect."""
+        return InputColumn(
+            name,
+            column_info_settings=self,
+            sqlglot_dialect_str=self.sqlglot_dialect,
+        )
+
     @property
     def source_dataset_column_name(self):
         if self._source_dataset_column_name_is_required:
@@ -55,40 +82,22 @@ class ColumnInfoSettings:
     @property
     def source_dataset_input_column(self):
         if self._source_dataset_column_name_is_required:
-            return InputColumn(
-                self._source_dataset_column_name,
-                column_info_settings=self,
-                sqlglot_dialect_str=self.sqlglot_dialect,
-            )
+            return self._input_column(self._source_dataset_column_name)
         else:
             return None
 
     @property
     def unique_id_input_column(self):
-        return InputColumn(
-            self.unique_id_column_name,
-            column_info_settings=self,
-            sqlglot_dialect_str=self.sqlglot_dialect,
-        )
+        return self._input_column(self.unique_id_column_name)
 
     @property
     def unique_id_input_columns(self) -> list[InputColumn]:
         cols = []
 
         if source_dataset_column_name := (self.source_dataset_column_name):
-            col = InputColumn(
-                source_dataset_column_name,
-                column_info_settings=self,
-                sqlglot_dialect_str=self.sqlglot_dialect,
-            )
-            cols.append(col)
+            cols.append(self._input_column(source_dataset_column_name))
 
-        col = InputColumn(
-            self.unique_id_column_name,
-            column_info_settings=self,
-            sqlglot_dialect_str=self.sqlglot_dialect,
-        )
-        cols.append(col)
+        cols.append(self._input_column(self.unique_id_column_name))
 
         return cols
 
@@ -123,45 +132,49 @@ class CoreModelSettings:
         return deepcopy(self)
 
     @property
-    def parameters_as_detailed_records(self):
+    def parameters_as_detailed_records(self) -> list[ModelParameterDetailedRecord]:
         output = []
         rr_match = self.probability_two_random_records_match
         for i, cc in enumerate(self.comparisons):
-            records = cc._as_detailed_records
-            for r in records:
-                r["probability_two_random_records_match"] = rr_match
-                r["comparison_sort_order"] = i
+            records = [
+                ModelParameterDetailedRecord.from_cl_detailed_record(
+                    r,
+                    probability_two_random_records_match=rr_match,
+                    comparison_sort_order=i,
+                )
+                for r in cc._as_detailed_records
+            ]
             output.extend(records)
 
         prior_description = (
             "The probability that two random records drawn at random match is "
             f"{rr_match:.3f} or one in "
-            f" {1/rr_match:,.1f} records."
+            f" {1 / rr_match:,.1f} records."
             "This is equivalent to a starting match weight of "
             f"{prob_to_match_weight(rr_match):.3f}."
         )
 
         # Finally add a record for probability_two_random_records_match
-        prop_record = {
-            "comparison_name": "probability_two_random_records_match",
-            "sql_condition": None,
-            "label_for_charts": "",
-            "m_probability": None,
-            "u_probability": None,
-            "m_probability_description": None,
-            "u_probability_description": None,
-            "has_tf_adjustments": False,
-            "tf_adjustment_column": None,
-            "tf_adjustment_weight": None,
-            "is_null_level": False,
-            "bayes_factor": prob_to_bayes_factor(rr_match),
-            "log2_bayes_factor": prob_to_match_weight(rr_match),
-            "comparison_vector_value": 0,
-            "max_comparison_vector_value": 0,
-            "bayes_factor_description": prior_description,
-            "probability_two_random_records_match": rr_match,
-            "comparison_sort_order": -1,
-        }
+        prop_record = ModelParameterDetailedRecord(
+            comparison_name="probability_two_random_records_match",
+            sql_condition=None,
+            label_for_charts="",
+            m_probability=None,
+            u_probability=None,
+            m_probability_description=None,
+            u_probability_description=None,
+            has_tf_adjustments=False,
+            tf_adjustment_column=None,
+            tf_adjustment_weight=None,
+            is_null_level=False,
+            bayes_factor=prob_to_bayes_factor(rr_match),
+            log2_bayes_factor=prob_to_match_weight(rr_match),
+            comparison_vector_value=0,
+            max_comparison_vector_value=0,
+            bayes_factor_description=prior_description,
+            probability_two_random_records_match=rr_match,
+            comparison_sort_order=-1,
+        )
         output.insert(0, prop_record)
         return output
 
@@ -200,6 +213,7 @@ class Settings:
         unique_id_column_name: str = "unique_id",
         source_dataset_column_name: str = "source_dataset",
         bayes_factor_column_prefix: str = "bf_",
+        match_weight_column_prefix: str = "mw_",
         term_frequency_adjustment_column_prefix: str = "tf_",
         comparison_vector_value_column_prefix: str = "gamma_",
         # TrainingSettings
@@ -207,19 +221,15 @@ class Settings:
         max_iterations: int = 25,
         # other
         sql_dialect: str,
-        linker_uid: str = None,
+        linker_uid: str | None = None,
     ):
-        # TODO: hook up validation here
-        # Validate against schema before processing
-        # validate_settings_against_schema(settings_dict)
-
         self._sql_dialect_str = sql_dialect
         self._sqlglot_dialect = SplinkDialect.from_string(sql_dialect).sqlglot_dialect
         self._link_type = link_type
 
         self.column_info_settings = ColumnInfoSettings(
             comparison_vector_value_column_prefix=comparison_vector_value_column_prefix,
-            bayes_factor_column_prefix=bayes_factor_column_prefix,
+            match_weight_column_prefix=match_weight_column_prefix,
             term_frequency_adjustment_column_prefix=term_frequency_adjustment_column_prefix,
             unique_id_column_name=unique_id_column_name,
             _source_dataset_column_name=source_dataset_column_name,
@@ -249,9 +259,10 @@ class Settings:
             retain_intermediate_calculation_columns
         )
 
-        # TODO: do we need to convert?
-        self._blocking_rules_to_generate_predictions = self._brs_as_objs(
-            blocking_rules_to_generate_predictions
+        self._blocking_rules_to_generate_predictions = (
+            BlockingRule._add_preceding_rules_to_each_blocking_rule(
+                blocking_rules_to_generate_predictions,
+            )
         )
 
         self._cache_uid = linker_uid
@@ -259,6 +270,18 @@ class Settings:
         self._warn_if_no_null_level_in_comparisons()
 
         self._additional_col_names_to_retain = additional_columns_to_retain
+
+    def _input_column(self, name: str) -> InputColumn:
+        """Create an InputColumn with this settings object's dialect.
+
+        This is a convenience method to avoid the verbose pattern of:
+            InputColumn(name, sqlglot_dialect_str=settings._sqlglot_dialect)
+        """
+        return InputColumn(
+            name,
+            column_info_settings=self.column_info_settings,
+            sqlglot_dialect_str=self._sqlglot_dialect,
+        )
 
     # TODO: move this to Comparison
     def _warn_if_no_null_level_in_comparisons(self):
@@ -300,27 +323,17 @@ class Settings:
         # Add any columns used in blocking rules but not model
         if self._retain_matching_columns:
             # Want to add any columns not already by the model
-            used_by_brs = []
+            used_by_brs_list: list[str] = []
             for br in self._blocking_rules_to_generate_predictions:
-                used_by_brs.extend(
+                used_by_brs_list.extend(
                     get_columns_used_from_sql(br.blocking_rule_sql, br.sqlglot_dialect)
                 )
 
-            used_by_brs = [
-                InputColumn(c, sqlglot_dialect_str=self._sqlglot_dialect)
-                for c in used_by_brs
-            ]
+            used_by_brs = {self._input_column(c) for c in used_by_brs_list}
+            already_used_cols = set(self._columns_used_by_comparisons)
 
-            used_by_brs = [c.unquote().name for c in used_by_brs]
-            already_used_names = self._columns_used_by_comparisons
-            already_used = [
-                InputColumn(c, sqlglot_dialect_str=self._sqlglot_dialect)
-                for c in already_used_names
-            ]
-            already_used_names = [c.unquote().name for c in already_used]
-
-            new_cols = list(set(used_by_brs) - set(already_used_names))
-            cols_to_retain.extend(new_cols)
+            new_cols = used_by_brs - already_used_cols
+            cols_to_retain.extend([c.unquote().name for c in new_cols])
 
         cols_to_retain.extend(self._additional_col_names_to_retain)
         return cols_to_retain
@@ -328,53 +341,25 @@ class Settings:
     @property
     def _additional_columns_to_retain(self) -> List[InputColumn]:
         cols = self._additional_column_names_to_retain
-        return [
-            InputColumn(
-                c,
-                column_info_settings=self.column_info_settings,
-                sqlglot_dialect_str=self._sqlglot_dialect,
-            )
-            for c in cols
-        ]
+        return [self._input_column(c) for c in cols]
 
     def _get_source_dataset_column_name_is_required(self) -> bool:
         return self._link_type not in ["dedupe_only"]
 
     @property
     def _term_frequency_columns(self) -> list[InputColumn]:
-        cols = set()
+        cols: set[InputColumn] = set()
         for cc in self.comparisons:
-            cols.update(cc._tf_adjustment_input_col_names)
-        return [
-            InputColumn(
-                c,
-                column_info_settings=self.column_info_settings,
-                sqlglot_dialect_str=self._sqlglot_dialect,
-            )
-            for c in list(cols)
-        ]
+            cols.update(cc._tf_adjustment_input_columns)
+        return list(cols)
 
     @property
-    def _needs_matchkey_column(self) -> bool:
-        """Where multiple `blocking_rules_to_generate_predictions` are specified,
-        it's useful to include a matchkey column, that indicates from which blocking
-        rule the pairwise record comparisons arose.
-
-        This column is only needed if multiple rules are specified.
-        """
-
-        return len(self._blocking_rules_to_generate_predictions) > 1
-
-    @property
-    def _columns_used_by_comparisons(self) -> List[str]:
-        cols_used = []
+    def _columns_used_by_comparisons(self) -> List[InputColumn]:
+        cols_used: list[InputColumn] = []
         for uid_col in self.column_info_settings.unique_id_input_columns:
-            cols_used.append(uid_col.name)
+            cols_used.append(uid_col)
         for cc in self.comparisons:
-            cols = cc._input_columns_used_by_case_statement
-            cols = [c.name for c in cols]
-
-            cols_used.extend(cols)
+            cols_used.extend(cc._input_columns_used_by_case_statement)
         return dedupe_preserving_order(cols_used)
 
     @property
@@ -399,7 +384,6 @@ class Settings:
             comparisons=self.core_model_settings.comparisons,
             retain_matching_columns=self._retain_matching_columns,
             additional_columns_to_retain=self._additional_columns_to_retain,
-            needs_matchkey_column=self._needs_matchkey_column,
         )
 
     @staticmethod
@@ -408,7 +392,6 @@ class Settings:
         comparisons: List[Comparison],
         retain_matching_columns: bool,
         additional_columns_to_retain: List[InputColumn],
-        needs_matchkey_column: bool,
     ) -> List[str]:
         cols = []
 
@@ -425,20 +408,18 @@ class Settings:
         for add_col in additional_columns_to_retain:
             cols.extend(add_col.names_l_r)
 
-        if needs_matchkey_column:
-            cols.append("match_key")
+        cols.append("match_key")
 
         cols = dedupe_preserving_order(cols)
         return cols
 
     @staticmethod
-    def columns_to_select_for_bayes_factor_parts(
+    def columns_to_select_for_match_weight_parts(
         unique_id_input_columns: List[InputColumn],
         comparisons: List[Comparison],
         retain_matching_columns: bool,
         retain_intermediate_calculation_columns: bool,
         additional_columns_to_retain: List[InputColumn],
-        needs_matchkey_column: bool,
     ) -> List[str]:
         cols = []
 
@@ -447,7 +428,7 @@ class Settings:
 
         for cc in comparisons:
             cols.extend(
-                cc._columns_to_select_for_bayes_factor_parts(
+                cc._columns_to_select_for_match_weight_parts(
                     retain_matching_columns,
                     retain_intermediate_calculation_columns,
                 )
@@ -456,8 +437,7 @@ class Settings:
         for add_col in additional_columns_to_retain:
             cols.extend(add_col.names_l_r)
 
-        if needs_matchkey_column:
-            cols.append("match_key")
+        cols.append("match_key")
 
         cols = dedupe_preserving_order(cols)
         return cols
@@ -470,7 +450,6 @@ class Settings:
         retain_intermediate_calculation_columns: bool,
         training_mode: bool,
         additional_columns_to_retain: List[InputColumn],
-        needs_matchkey_column: bool,
     ) -> List[str]:
         cols = []
 
@@ -490,22 +469,13 @@ class Settings:
         for add_col in additional_columns_to_retain:
             cols.extend(add_col.names_l_r)
 
-        if needs_matchkey_column:
-            cols.append("match_key")
+        cols.append("match_key")
 
         cols = dedupe_preserving_order(cols)
         return cols
 
     def _get_comparison_by_output_column_name(self, name: str) -> Comparison:
         return self.core_model_settings.get_comparison_by_output_column_name(name)
-
-    def _brs_as_objs(
-        self, brs_as_strings: Sequence[str | BlockingRule]
-    ) -> List[BlockingRule]:
-        brs_as_objs = [blocking_rule_to_obj(br) for br in brs_as_strings]
-        for n, br in enumerate(brs_as_objs):
-            br.add_preceding_rules(brs_as_objs[:n])
-        return brs_as_objs
 
     # TODO: is this the most logical place for this to live now it's static?
     @staticmethod
@@ -624,14 +594,13 @@ class Settings:
             **current_settings,
         }
 
-    def match_weights_chart(self, as_dict=False):
-        records = self._parameters_as_detailed_records
+    def match_weights_chart(self):
+        return MatchWeightsChart(
+            self._parameters_as_detailed_records,
+        )
 
-        return match_weights_chart(records, as_dict=as_dict)
-
-    def m_u_parameters_chart(self, as_dict=False):
-        records = self._parameters_as_detailed_records
-        return m_u_parameters_chart(records, as_dict=as_dict)
+    def m_u_parameters_chart(self):
+        return MUParametersChart(self._parameters_as_detailed_records)
 
     def _columns_without_estimated_parameters_message(self):
         message_lines = []
@@ -676,7 +645,8 @@ class Settings:
                     "behaviour, either: \n - assign a value for "
                     "`probability_two_random_records_match` in your settings dictionary"
                     ", or \n - estimate with the"
-                    " `linker.estimate_probability_two_random_records_match` function."
+                    " `linker.training.estimate_probability_two_random_records_match` "
+                    "function."
                 ]
             )
         return messages
@@ -694,15 +664,3 @@ class Settings:
             f"assessed as follows:\n\n{comparison_desc_str}"
         )
         return desc
-
-    @property
-    def salting_required(self):
-        # see https://github.com/duckdb/duckdb/discussions/9710
-        # in duckdb to parallelise we need salting
-        if self._sql_dialect_str == "duckdb":
-            return True
-
-        for br in self._blocking_rules_to_generate_predictions:
-            if isinstance(br, SaltedBlockingRule):
-                return True
-        return False

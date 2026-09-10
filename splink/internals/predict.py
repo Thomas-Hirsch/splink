@@ -2,11 +2,17 @@ from __future__ import annotations
 
 # This is otherwise known as the expectation step of the EM algorithm.
 import logging
+from textwrap import dedent
 from typing import List
 
 from splink.internals.comparison import Comparison
+from splink.internals.dialects import SplinkDialect
 from splink.internals.input_column import InputColumn
-from splink.internals.misc import prob_to_bayes_factor, prob_to_match_weight
+from splink.internals.misc import (
+    indent_sql,
+    prob_to_match_weight,
+    threshold_args_to_match_weight,
+)
 
 from .settings import CoreModelSettings, Settings
 
@@ -15,59 +21,54 @@ logger = logging.getLogger(__name__)
 
 def predict_from_comparison_vectors_sqls_using_settings(
     settings_obj: Settings,
-    threshold_match_probability: float = None,
-    threshold_match_weight: float = None,
+    threshold_match_probability: float | None = None,
+    threshold_match_weight: float | None = None,
     include_clerical_match_score: bool = False,
-    sql_infinity_expression: str = "'infinity'",
 ) -> list[dict[str, str]]:
     return predict_from_comparison_vectors_sqls(
         unique_id_input_columns=settings_obj.column_info_settings.unique_id_input_columns,
         core_model_settings=settings_obj.core_model_settings,
+        sql_dialect=SplinkDialect.from_string(settings_obj._sql_dialect_str),
         threshold_match_probability=threshold_match_probability,
         threshold_match_weight=threshold_match_weight,
         retain_matching_columns=settings_obj._retain_matching_columns,
         retain_intermediate_calculation_columns=settings_obj._retain_intermediate_calculation_columns,
         training_mode=False,
         additional_columns_to_retain=settings_obj._additional_columns_to_retain,
-        needs_matchkey_column=settings_obj._needs_matchkey_column,
         include_clerical_match_score=include_clerical_match_score,
-        sql_infinity_expression=sql_infinity_expression,
     )
 
 
 def predict_from_comparison_vectors_sqls(
     unique_id_input_columns: List[InputColumn],
     core_model_settings: CoreModelSettings,
-    threshold_match_probability: float = None,
-    threshold_match_weight: float = None,
+    sql_dialect: SplinkDialect,
+    threshold_match_probability: float | None = None,
+    threshold_match_weight: float | None = None,
     # by default we keep off everything we don't necessarily need
     retain_matching_columns: bool = False,
     retain_intermediate_calculation_columns: bool = False,
     training_mode: bool = False,
     additional_columns_to_retain: List[InputColumn] = [],
-    needs_matchkey_column: bool = False,
     include_clerical_match_score: bool = False,
-    sql_infinity_expression: str = "'infinity'",
 ) -> list[dict[str, str]]:
     sqls = []
 
-    select_cols = Settings.columns_to_select_for_bayes_factor_parts(
+    select_cols = Settings.columns_to_select_for_match_weight_parts(
         unique_id_input_columns=unique_id_input_columns,
         comparisons=core_model_settings.comparisons,
         retain_matching_columns=retain_matching_columns,
         retain_intermediate_calculation_columns=retain_intermediate_calculation_columns,
         additional_columns_to_retain=additional_columns_to_retain,
-        needs_matchkey_column=needs_matchkey_column,
     )
-    select_cols_expr = ",".join(select_cols)
-
     if include_clerical_match_score:
-        clerical_match_score = ", clerical_match_score"
-    else:
-        clerical_match_score = ""
+        select_cols.append("clerical_match_score")
+
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_cols)
 
     sql = f"""
-    select {select_cols_expr} {clerical_match_score}
+    select
+{select_cols_expr}
     from __splink__df_comparison_vectors
     """
 
@@ -84,42 +85,40 @@ def predict_from_comparison_vectors_sqls(
         retain_intermediate_calculation_columns=retain_intermediate_calculation_columns,
         training_mode=training_mode,
         additional_columns_to_retain=additional_columns_to_retain,
-        needs_matchkey_column=needs_matchkey_column,
     )
-    select_cols_expr = ",".join(select_cols)
-    bf_terms = []
+    mw_terms = []
     for cc in core_model_settings.comparisons:
-        bf_terms.extend(cc._match_weight_columns_to_multiply)
+        mw_terms.extend(cc._match_weight_columns_to_sum)
 
     prior = core_model_settings.probability_two_random_records_match
-    bayes_factor_expr, match_prob_expr = _combine_prior_and_bfs(
+    match_weight_expr, match_prob_expr = _combine_prior_and_mws(
         prior,
-        bf_terms,
-        sql_infinity_expression,
+        mw_terms,
+        sql_dialect,
     )
-    # Add condition to treat case of 0 as None
-    if threshold_match_probability == 0:
-        threshold_match_probability = None
-    # In case user provided both, take the minimum of the two thresholds
-    if threshold_match_probability is not None:
-        thres_prob_as_weight = prob_to_match_weight(threshold_match_probability)
-    else:
-        thres_prob_as_weight = None
-    if threshold_match_probability is not None or threshold_match_weight is not None:
-        thresholds = [
-            thres_prob_as_weight,
-            threshold_match_weight,
-        ]
-        threshold = max([t for t in thresholds if t is not None])
-        threshold_expr = f" where log2({bayes_factor_expr}) >= {threshold} "
+
+    threshold_as_mw = threshold_args_to_match_weight(
+        threshold_match_probability, threshold_match_weight
+    )
+
+    if threshold_as_mw is not None:
+        threshold_expr = f" where ({match_weight_expr}) >= {threshold_as_mw} "
     else:
         threshold_expr = ""
 
+    select_expressions = [
+        f"{match_weight_expr} as match_weight",
+        f"{match_prob_expr} as match_probability",
+        *select_cols,
+    ]
+    if include_clerical_match_score:
+        select_expressions.append("clerical_match_score")
+
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_expressions)
+
     sql = f"""
     select
-    log2({bayes_factor_expr}) as match_weight,
-    {match_prob_expr} as match_probability,
-    {select_cols_expr} {clerical_match_score}
+{select_cols_expr}
     from __splink__df_match_weight_parts
     {threshold_expr}
     """
@@ -136,7 +135,7 @@ def predict_from_comparison_vectors_sqls(
 def predict_from_agreement_pattern_counts_sqls(
     comparisons: List[Comparison],
     probability_two_random_records_match: float,
-    sql_infinity_expression: str = "'infinity'",
+    sql_dialect: SplinkDialect,
 ) -> list[dict[str, str]]:
     sqls = []
 
@@ -144,17 +143,18 @@ def predict_from_agreement_pattern_counts_sqls(
 
     for cc in comparisons:
         cc_sqls = [
-            cl._bayes_factor_sql(cc._gamma_column_name) for cl in cc.comparison_levels
+            cl._match_weight_sql(cc._gamma_column_name) for cl in cc.comparison_levels
         ]
-        sql = " ".join(cc_sqls)
-        sql = f"CASE {sql} END as {cc._bf_column_name}"
+        sql = "\n".join(cc_sqls)
+        sql = f"CASE\n{indent_sql(sql)}\nEND as {cc._mw_column_name}"
         select_cols.append(cc._gamma_column_name)
         select_cols.append(sql)
     select_cols.append("agreement_pattern_count")
-    select_cols_expr = ",".join(select_cols)
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_cols)
 
     sql = f"""
-    select {select_cols_expr}
+    select
+{select_cols_expr}
     from __splink__agreement_pattern_counts
     """
 
@@ -167,23 +167,27 @@ def predict_from_agreement_pattern_counts_sqls(
     select_cols = []
     for cc in comparisons:
         select_cols.append(cc._gamma_column_name)
-        select_cols.append(cc._bf_column_name)
+        select_cols.append(cc._mw_column_name)
     select_cols.append("agreement_pattern_count")
-    select_cols_expr = ",".join(select_cols)
 
     prior = probability_two_random_records_match
-    bf_terms = [cc._bf_column_name for cc in comparisons]
-    bayes_factor_expr, match_prob_expr = _combine_prior_and_bfs(
+    mw_terms = [cc._mw_column_name for cc in comparisons]
+    match_weight_expr, match_prob_expr = _combine_prior_and_mws(
         prior,
-        bf_terms,
-        sql_infinity_expression,
+        mw_terms,
+        sql_dialect,
     )
+
+    select_expressions = [
+        f"{match_weight_expr} as match_weight",
+        f"{match_prob_expr} as match_probability",
+        *select_cols,
+    ]
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_expressions)
 
     sql = f"""
     select
-    log2({bayes_factor_expr}) as match_weight,
-    {match_prob_expr} as match_probability,
-    {select_cols_expr}
+{select_cols_expr}
     from __splink__df_match_weight_parts
     """
 
@@ -196,21 +200,30 @@ def predict_from_agreement_pattern_counts_sqls(
     return sqls
 
 
-def _combine_prior_and_bfs(
-    prior: float, bf_terms: list[str], sql_infinity_expr: str
+def _combine_prior_and_mws(
+    prior: float,
+    mw_terms: list[str],
+    sql_dialect: SplinkDialect,
 ) -> tuple[str, str]:
-    """Compute the combined Bayes factor and match probability expressions"""
-    if prior == 1.0:
-        bf_expr = sql_infinity_expr
-        match_prob_expr = "1.0"
-        return bf_expr, match_prob_expr
+    """Compute the combined match weight and match probability expressions (additive)"""
 
-    bf_prior = prob_to_bayes_factor(prior)
-    bf_expr = f"cast({bf_prior} as float8) * " + " * ".join(bf_terms)
+    mw_prior = prob_to_match_weight(prior)
 
-    mp_raw = f"({bf_expr})/(1+({bf_expr}))"
-    # if any BF is Infinity then we need to adjust the match probability
-    any_term_inf = " OR ".join((f"{term} = {sql_infinity_expr}" for term in bf_terms))
-    match_prob_expr = f"CASE WHEN {any_term_inf} THEN 1.0 ELSE {mp_raw} END"
+    mw_expr = f"cast({mw_prior} as float8) + " + " + ".join(mw_terms)
 
-    return bf_expr, match_prob_expr
+    # match_prob = 1 / (1 + 2^(-match_weight))
+    # 2^2000 could overflow, but 2^-2000 will not
+    # So for numerical stability,
+    # - When mw >= 0: 1 / (1 + 2^(-mw))
+    # - When mw < 0: 2^mw / (1 + 2^mw)
+    match_prob_expr = f"""
+    CASE
+        WHEN ({mw_expr}) >= 0 THEN
+            1.0 / (1.0 + POWER(cast(2 as float8), -({mw_expr})))
+        ELSE
+            POWER(cast(2 as float8), ({mw_expr})) /
+            (1.0 + POWER(cast(2 as float8), ({mw_expr})))
+    END
+    """.strip()
+
+    return mw_expr, dedent(match_prob_expr)

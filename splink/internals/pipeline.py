@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, List, Optional
 
 import sqlglot
 from sqlglot.errors import ParseError
 from sqlglot.expressions import Table
 
-from splink.internals.misc import ensure_is_list
+from splink.internals.misc import ensure_is_list, indent_sql, normalise_sql
 
 from .splink_dataframe import SplinkDataFrame
 
@@ -50,7 +51,7 @@ class CTEPipeline:
         self.queue: List[CTE] = []
 
         if input_dataframes is None:
-            self.input_dataframes = []
+            self.input_dataframes: list[SplinkDataFrame] = []
         else:
             self.input_dataframes = ensure_is_list(input_dataframes)
 
@@ -75,11 +76,50 @@ class CTEPipeline:
     def append_input_dataframe(self, df: SplinkDataFrame) -> None:
         self.input_dataframes.append(df)
 
-    def _input_dataframes_as_cte(self):
+    @staticmethod
+    def _replace_templated_identifier_with_physical_name(
+        sql: str, templated_name: str, physical_name: str
+    ) -> str:
+        # Replace only whole SQL identifiers, preserving matching quotes.
+        # This matches cases like:
+        #   from __splink__df_concat_with_tf)
+        #   from __splink__df_concat_with_tf,
+        #   from "__splink__df_concat_with_tf" as l
+        # but not longer identifiers like:
+        #   __splink__df_concat_with_tf_left
+        pattern = (
+            rf'(?<!\w)(?P<quote>["`]?){re.escape(templated_name)}' rf"(?P=quote)(?!\w)"
+        )
+
+        def _replacement(match: re.Match[str]) -> str:
+            quote = match.group("quote")
+            return f"{quote}{physical_name}{quote}"
+
+        return re.sub(pattern, _replacement, sql)
+
+    def _replace_templated_references_with_physical_names(self, sql: str) -> str:
+        replacements = sorted(
+            (
+                (df.templated_name, df.physical_name)
+                for df in self.input_dataframes
+                if not df.physical_and_template_names_equal
+            ),
+            key=lambda pair: len(pair[0]),
+            reverse=True,
+        )
+        for templated_name, physical_name in replacements:
+            sql = self._replace_templated_identifier_with_physical_name(
+                sql, templated_name, physical_name
+            )
+        return sql
+
+    def _resolved_queue(self):
         return [
-            CTE(f"\nselect * from {df.physical_name}", df.templated_name)
-            for df in self.input_dataframes
-            if not df.physical_and_template_names_equal
+            CTE(
+                self._replace_templated_references_with_physical_names(cte.sql),
+                cte.output_table_name,
+            )
+            for cte in self.queue
         ]
 
     def _log_pipeline(self, parts):
@@ -92,11 +132,11 @@ class CTEPipeline:
             )
 
             for i, part in enumerate(parts):
-                logger.log(7, f"    Pipeline part {i+1}: {part.cte_description}")
+                logger.log(7, f"    Pipeline part {i + 1}: {part.cte_description}")
 
     def ctes_pipeline(self) -> List[CTE]:
         """Common table expressions"""
-        return self._input_dataframes_as_cte() + self.queue
+        return self._resolved_queue()
 
     def generate_cte_pipeline_sql(self) -> str:
         self.spent = True
@@ -108,12 +148,15 @@ class CTEPipeline:
         with_ctes_pipeline = pipeline[:-1]
         final_query = pipeline[-1]
 
-        with_ctes = [f"{p.output_table_name} as ({p.sql})" for p in with_ctes_pipeline]
+        with_ctes = [
+            f"{p.output_table_name} as (\n{indent_sql(p.sql)}\n)"
+            for p in with_ctes_pipeline
+        ]
         with_ctes_str = ", \n\n".join(with_ctes)
         if with_ctes_str:
-            with_ctes_str = f"\nWITH\n\n{with_ctes_str} "
+            with_ctes_str = f"WITH\n\n{with_ctes_str}\n"
 
-        final_sql = with_ctes_str + "\n" + final_query.sql
+        final_sql = with_ctes_str + normalise_sql(final_query.sql)
 
         return final_sql
 

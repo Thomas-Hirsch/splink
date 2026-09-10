@@ -1,4 +1,6 @@
+from sys import version_info
 from typing import TYPE_CHECKING
+from warnings import warn
 
 from splink.internals.blocking_rule_library import block_on
 from splink.internals.column_expression import ColumnExpression
@@ -16,6 +18,21 @@ from splink.internals.settings_creator import SettingsCreator
 if TYPE_CHECKING:
     from splink.internals.duckdb.database_api import DuckDBAPI
     from splink.internals.spark.database_api import SparkAPI
+
+_LOWEST_SUPPORTED_MINOR_VERSION = 10
+
+if (installed_minor_version := version_info.minor) < _LOWEST_SUPPORTED_MINOR_VERSION:
+    warn(
+        (
+            f"Python 3.{installed_minor_version} has reached end-of-life.  "
+            "Future releases of Splink may no longer be compatible with "
+            "this python version.\n"
+            "Please consider upgrading your python version if you wish "
+            "to continue to be able to install the latest version of Splink."
+        ),
+        category=DeprecationWarning,
+        stacklevel=2,
+    )
 
 
 # Use getarr to make the error appear at the point of use
@@ -39,7 +56,7 @@ def __getattr__(name):
     raise AttributeError(f"module 'splink' has no attribute '{name}'") from None
 
 
-__version__ = "4.0.3"
+__version__ = "5.0.0.dev4"
 
 
 __all__ = [

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Optional, Union
+from typing import Any, Iterable, List, Literal, Optional, Union
 
 from splink.internals import comparison_level_library as cll
 from splink.internals.column_expression import ColumnExpression
@@ -67,7 +67,9 @@ class LevenshteinAtThresholds(ComparisonCreator):
                 Defaults to [1, 2].
         """
 
-        thresholds_as_iterable = ensure_is_iterable(distance_threshold_or_thresholds)
+        thresholds_as_iterable: Iterable[int] = ensure_is_iterable(
+            distance_threshold_or_thresholds
+        )
         # unpack it to a list so we can repeat iteration if needed
         self.thresholds = [*thresholds_as_iterable]
         super().__init__(col_name)
@@ -345,6 +347,76 @@ class DistanceFunctionAtThresholds(ComparisonCreator):
         return self.col_expression.output_column_name
 
 
+class PairwiseStringDistanceFunctionAtThresholds(ComparisonCreator):
+    def __init__(
+        self,
+        col_name: str,
+        distance_function_name: Literal[
+            "levenshtein", "damerau_levenshtein", "jaro_winkler", "jaro"
+        ],
+        distance_threshold_or_thresholds: Union[Iterable[int | float], int | float],
+    ):
+        """
+        Represents a comparison of the *most similar pair* of values
+        where the first value is in the array data in `col_name` for the first record
+        and the second value is in the array data in `col_name` for the second record.
+        The comparison has three or more levels:
+
+        - Exact match between any pair of values
+        - User-selected string distance function levels at specified thresholds
+        - ...
+        - Anything else
+
+        For example, with distance_threshold_or_thresholds = [1, 3]
+        and distance_function 'levenshtein' the levels are:
+
+        - Exact match between any pair of values
+        - Levenshtein distance between the most similar pair of values <= 1
+        - Levenshtein distance between the most similar pair of values <= 3
+        - Anything else
+
+        Args:
+            col_name (str): The name of the column to compare.
+            distance_function_name (str): the name of the string distance function.
+                Must be one of "levenshtein," "damera_levenshtein," "jaro_winkler,"
+                or "jaro."
+            distance_threshold_or_thresholds (Union[float, list], optional): The
+                threshold(s) to use for the distance function level(s).
+        """
+        thresholds_as_iterable = ensure_is_iterable(distance_threshold_or_thresholds)
+        self.thresholds = [*thresholds_as_iterable]
+        self.distance_function_name = distance_function_name
+        super().__init__(col_name)
+
+    def create_comparison_levels(self) -> List[ComparisonLevelCreator]:
+        return [
+            cll.NullLevel(self.col_expression),
+            # It is assumed that any string distance treats identical
+            # arrays as the most similar
+            cll.ArrayIntersectLevel(self.col_expression, min_intersection=1),
+            *[
+                cll.PairwiseStringDistanceFunctionLevel(
+                    self.col_expression,
+                    distance_threshold=threshold,
+                    distance_function_name=self.distance_function_name,
+                )
+                for threshold in self.thresholds
+            ],
+            cll.ElseLevel(),
+        ]
+
+    def create_description(self) -> str:
+        comma_separated_thresholds_string = ", ".join(map(str, self.thresholds))
+        plural = "s" if len(self.thresholds) > 1 else ""
+        return (
+            f"Pairwise {self.distance_function_name} distance at threshold{plural} "
+            f"{comma_separated_thresholds_string} vs. anything else"
+        )
+
+    def create_output_column_name(self) -> str:
+        return self.col_expression.output_column_name
+
+
 class AbsoluteTimeDifferenceAtThresholds(ComparisonCreator):
     def __init__(
         self,
@@ -353,7 +425,7 @@ class AbsoluteTimeDifferenceAtThresholds(ComparisonCreator):
         input_is_string: bool,
         metrics: Union[DateMetricType, List[DateMetricType]],
         thresholds: Union[int, float, List[Union[int, float]]],
-        datetime_format: str = None,
+        datetime_format: str | None = None,
         term_frequency_adjustments: bool = False,
         invalid_dates_as_null: bool = True,
     ):
@@ -576,8 +648,8 @@ class CustomComparison(ComparisonCreator):
     def __init__(
         self,
         comparison_levels: List[Union[ComparisonLevelCreator, dict[str, Any]]],
-        output_column_name: str = None,
-        comparison_description: str = None,
+        output_column_name: str | None = None,
+        comparison_description: str | None = None,
     ):
         """
         Represents a comparison of the data with custom supplied levels.
@@ -613,7 +685,7 @@ class CustomComparison(ComparisonCreator):
     def _convert_to_creator(
         comparison_creator: dict[str, Any] | ComparisonCreator,
     ) -> ComparisonCreator:
-        if isinstance(comparison_creator, dict):
+        if not isinstance(comparison_creator, ComparisonCreator):
             return CustomComparison(**comparison_creator)
         return comparison_creator
 
@@ -649,7 +721,7 @@ class DateOfBirthComparison(ComparisonCreator):
             "year",
             "year",
         ],
-        datetime_format: str = None,
+        datetime_format: str | None = None,
         invalid_dates_as_null: bool = True,
     ):
         """
@@ -748,6 +820,7 @@ class DateOfBirthComparison(ComparisonCreator):
                         threshold=threshold,
                         metric=metric,
                         input_is_string=self.input_is_string,
+                        datetime_format=self.datetime_format,
                     ).configure(
                         label_for_charts=f"Abs date difference <= {threshold} {metric}"
                     )
@@ -771,8 +844,8 @@ class PostcodeComparison(ComparisonCreator):
         col_name: Union[str, ColumnExpression],
         *,
         invalid_postcodes_as_null: bool = False,
-        lat_col: Union[str, ColumnExpression] = None,
-        long_col: Union[str, ColumnExpression] = None,
+        lat_col: Union[str, ColumnExpression] | None = None,
+        long_col: Union[str, ColumnExpression] | None = None,
         km_thresholds: Union[float, List[float]] = [1, 10, 100],
     ):
         """
@@ -935,7 +1008,7 @@ class NameComparison(ComparisonCreator):
         col_name: Union[str, ColumnExpression],
         *,
         jaro_winkler_thresholds: Union[float, list[float]] = [0.92, 0.88, 0.7],
-        dmeta_col_name: str = None,
+        dmeta_col_name: str | None = None,
     ):
         """
         Generate an 'out of the box' comparison for a name column in the `col_name`
@@ -1021,7 +1094,7 @@ class ForenameSurnameComparison(ComparisonCreator):
         surname_col_name: Union[str, ColumnExpression],
         *,
         jaro_winkler_thresholds: Union[float, list[float]] = [0.92, 0.88],
-        forename_surname_concat_col_name: str = None,
+        forename_surname_concat_col_name: str | None = None,
     ):
         """
         Generate an 'out of the box' comparison for forename and surname columns

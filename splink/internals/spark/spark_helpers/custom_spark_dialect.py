@@ -1,6 +1,5 @@
 from sqlglot import exp
 from sqlglot.dialects import Dialect, Spark
-from sqlglot.generator import Generator as GeneratorSqlglot
 
 
 def cast_as_double_edit(self, expression):
@@ -19,13 +18,15 @@ def cast_as_double_edit(self, expression):
     return expression.sql(dialect="spark")
 
 
-class CustomSpark(Spark):
-    class Parser(Spark.Parser):
+# later sqlglot version lacks some typing info, so get errors
+# e.g. Class cannot subclass "Spark" (has type "Any")  [misc]
+class CustomSpark(Spark):  # type: ignore[misc]
+    class Parser(Spark.Parser):  # type: ignore[misc]
         FUNCTIONS = {
             **Spark.Parser.FUNCTIONS,
         }
 
-    class Generator(GeneratorSqlglot):
+    class Generator(Spark.Generator):  # type: ignore[misc]
         TYPE_MAPPING = {
             **Spark.Generator.TYPE_MAPPING,
         }

@@ -21,7 +21,7 @@ However, this is not the case with `Comparisons`, which tend to use backend spec
 The user provides custom SQL is two places in Splink:
 
 1. Blocking rules
-2. The `sql_condition` (see [here](https://moj-analytical-services.github.io/splink/settings_dict_guide.html#sql_condition)) provided as part of a `Comparison`
+2. The `sql_condition` (see [here](../api_docs/settings_dict_guide.md#sql_condition)) provided as part of a `Comparison`
 
 The user is free to write this SQL however they want.
 
@@ -32,5 +32,3 @@ It's up to the user to ensure the SQL they provide will execute successfully in 
 Occasionally some modifications are needed to the SQL to ensure it executes against the target backend.
 
 `sqlglot` is used for this purpose. For instance, a custom dialect is implemented in the Spark linker.
-
-A transformer is implemented in the Athena linker.

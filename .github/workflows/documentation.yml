@@ -1,86 +1,84 @@
-name: docswithmkdoc
+name: Documentation
 
 on:
   push:
     branches:
-      - master
-
+      - 'splink4_maintenance'
+      - 'master'
   pull_request:
     branches:
-      - master
+      - 'splink4_maintenance'
+      - 'master'
     paths:
       # files that affect the docs build:
       - docs/**
       - CONTRIBUTING.md
       - mkdocs.yml
-
+      # and potentially dependencies - build is quick so shouldn't be too much pain to run this:
+      - pyproject.toml
+      - uv.lock
   workflow_dispatch:
+
+permissions: {}
 
 jobs:
   build:
+    name: Build Documentation
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/setup-python@v4
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: 3.9
-      - uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Cache pip dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('scripts/docs-requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          persist-credentials: false
 
-      - run: tree docs/
+      - name: Setup uv
+        id: setup_uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
 
-      - name: Install docs dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r scripts/docs-requirements.txt
+      - name: Install Python 3.13
+        id: install_python313
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        id: install_dependencies
+        run: uv sync --python 3.13 --group docs
+
+      - name: Render notebooks
+        id: render_notebooks
+        run: cd docs/demos && ./render_notebooks.sh -j 4
 
       - name: Build documentation
-        run: mkdocs build
-
-      - name: Check links
-        uses: lycheeverse/lychee-action@v1.8.0
-        with:
-          fail: false
-          args: --offline site/ --verbose './**/*.html'
+        id: build_documentation
+        run: uv run python -m mkdocs build
 
       - name: Upload built site
-        uses: actions/upload-artifact@v4.4.0
+        id: upload_built_site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          name: built_site
           path: site
-
-      # some environment info
-      - run: pip freeze
-      - run: mkdocs --version
 
   deploy:
-    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/splink4_maintenance'
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    name: Deploy Documentation to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy_pages.outputs.page_url }}
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
     steps:
-      - uses: actions/setup-python@v4
-        with:
-          python-version: 3.9
+      - name: Configure Pages
+        id: configure_pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/download-artifact@v4.1.7
-        with:
-          name: built_site
-          path: site
-
-      - name: commit and force-push to gh-pages branch
-        run: |
-          pip install ghp-import==2.1.0
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "github-actions[bot]"
-          ghp-import -opfm "Update docs from commit ${{ github.sha }}" site
+      - name: Deploy to GitHub Pages
+        id: deploy_pages
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -1,7 +1,5 @@
 from copy import deepcopy
 
-import pandas as pd
-
 from splink.internals.comparison_library import ExactMatch
 from splink.internals.duckdb.database_api import DuckDBAPI
 from splink.internals.linker import Linker
@@ -22,6 +20,7 @@ settings_template = {
     "retain_intermediate_calculation_columns": True,
 }
 
+dummy_demo_data = {"first_name": "John", "surname": "Smith", "dob": "01/01/1980"}
 data = [
     {"id": 1, "source_ds": "d"},
     {"id": 2, "source_ds": "d"},
@@ -32,16 +31,26 @@ data = [
 ]
 
 
-df = pd.DataFrame(data)
-df["first_name"] = "John"
-df["surname"] = "Smith"
-df["dob"] = "01/01/1980"
+def dropkey(data_dict, key):
+    del data_dict[key]
+    return data_dict
 
-sds_b_only = df.query("source_ds == 'b'").drop(columns=["source_ds"], axis=1)
 
-sds_c_only = df.query("source_ds == 'c'").drop(columns=["source_ds"], axis=1)
-
-sds_d_only = df.query("source_ds == 'd'").drop(columns=["source_ds"], axis=1)
+sds_b_only = [
+    dropkey({**row, **dummy_demo_data}, "source_ds")
+    for row in data
+    if row["source_ds"] == "b"
+]
+sds_c_only = [
+    dropkey({**row, **dummy_demo_data}, "source_ds")
+    for row in data
+    if row["source_ds"] == "c"
+]
+sds_d_only = [
+    dropkey({**row, **dummy_demo_data}, "source_ds")
+    for row in data
+    if row["source_ds"] == "d"
+]
 
 
 def test_dedupe_only_join_condition():
@@ -54,146 +63,113 @@ def test_dedupe_only_join_condition():
         {"id": 6},
     ]
 
-    df = pd.DataFrame(data)
-    df["first_name"] = "John"
-    df["surname"] = "Smith"
-    df["dob"] = "01/01/1980"
-
     settings = deepcopy(settings_template)
     settings["link_type"] = "dedupe_only"
 
-    settings_salt = deepcopy(settings_template)
-    settings_salt["link_type"] = "dedupe_only"
+    db_api = DuckDBAPI()
+    df_sdf = db_api.register([{**row, **dummy_demo_data} for row in data])
+    linker = Linker(df_sdf, settings)
+    predict_rows = linker.inference.predict().as_record_list()
 
-    for s in [settings, settings_salt]:
-        db_api = DuckDBAPI()
+    assert len(predict_rows) == (6 * 5) / 2
 
-        linker = Linker(df.copy(), s, db_api=db_api)
-
-        df_predict = linker.inference.predict().as_pandas_dataframe()
-
-        assert len(df_predict) == (6 * 5) / 2
-
-        # Check that the lower ID is always on the left hand side
-        assert all(df_predict["id_l"] < df_predict["id_r"])
-
-        # self_link = linker._self_link().as_pandas_dataframe()
-        # assert len(self_link) == len(data)
+    # Check that the lower ID is always on the left hand side
+    assert all(row["id_l"] < row["id_r"] for row in predict_rows)
 
 
 def test_link_only_two_join_condition():
     settings = deepcopy(settings_template)
-
-    settings = deepcopy(settings_template)
     settings["link_type"] = "link_only"
 
-    settings_salt = deepcopy(settings_template)
-    settings_salt["link_type"] = "link_only"
+    db_api = DuckDBAPI()
+    sds_d_sdf = db_api.register(sds_d_only)
+    sds_b_sdf = db_api.register(sds_b_only)
+    linker = Linker([sds_d_sdf, sds_b_sdf], settings)
+    predict_rows = linker.inference.predict().as_record_list()
 
-    for s in [settings, settings_salt]:
-        db_api = DuckDBAPI()
+    assert len(predict_rows) == 4
 
-        linker = Linker([sds_d_only, sds_b_only], s, db_api=db_api)
-
-        df_predict = linker.inference.predict().as_pandas_dataframe()
-
-        assert len(df_predict) == 4
-
-        # Check that the lower ID is always on the left hand side
-        df_predict["id_concat_l"] = (
-            df_predict["source_dataset_l"] + "-__-" + df_predict["id_l"].astype(str)
-        )
-        df_predict["id_concat_r"] = (
-            df_predict["source_dataset_r"] + "-__-" + df_predict["id_r"].astype(str)
-        )
-        assert all(df_predict["id_concat_l"] < df_predict["id_concat_r"])
-
-        # self_link = linker._self_link().as_pandas_dataframe()
-        # assert len(self_link) == 4
+    # Check that the lower ID is always on the left hand side
+    predict_rows = [
+        {
+            **row,
+            "id_concat_l": f"{row['source_dataset_l']}-__-{row['id_l']}",
+            "id_concat_r": f"{row['source_dataset_r']}-__-{row['id_r']}",
+        }
+        for row in predict_rows
+    ]
+    assert all(row["id_concat_l"] < row["id_concat_r"] for row in predict_rows)
 
 
 def test_link_only_three_join_condition():
     settings = deepcopy(settings_template)
     settings["link_type"] = "link_only"
 
-    settings_salt = deepcopy(settings_template)
-    settings_salt["link_type"] = "link_only"
+    db_api = DuckDBAPI()
+    sds_d_sdf = db_api.register(sds_d_only)
+    sds_b_sdf = db_api.register(sds_b_only)
+    sds_c_sdf = db_api.register(sds_c_only)
+    linker = Linker([sds_d_sdf, sds_b_sdf, sds_c_sdf], settings)
+    predict_rows = linker.inference.predict().as_record_list()
 
-    for s in [settings, settings_salt]:
-        db_api = DuckDBAPI()
+    assert len(predict_rows) == 12
 
-        linker = Linker([sds_d_only, sds_b_only, sds_c_only], s, db_api=db_api)
-
-        df_predict = linker.inference.predict().as_pandas_dataframe()
-
-        assert len(df_predict) == 12
-
-        # Check that the lower ID is always on the left hand side
-        df_predict["id_concat_l"] = (
-            df_predict["source_dataset_l"] + "-__-" + df_predict["id_l"].astype(str)
-        )
-        df_predict["id_concat_r"] = (
-            df_predict["source_dataset_r"] + "-__-" + df_predict["id_r"].astype(str)
-        )
-        assert all(df_predict["id_concat_l"] < df_predict["id_concat_r"])
-
-        # self_link = linker._self_link().as_pandas_dataframe()
-        # assert len(self_link) == 6
+    # Check that the lower ID is always on the left hand side
+    predict_rows = [
+        {
+            **row,
+            "id_concat_l": f"{row['source_dataset_l']}-__-{row['id_l']}",
+            "id_concat_r": f"{row['source_dataset_r']}-__-{row['id_r']}",
+        }
+        for row in predict_rows
+    ]
+    assert all(row["id_concat_l"] < row["id_concat_r"] for row in predict_rows)
 
 
 def test_link_and_dedupe_two_join_condition():
     settings = deepcopy(settings_template)
     settings["link_type"] = "link_and_dedupe"
 
-    settings_salt = deepcopy(settings_template)
-    settings_salt["link_type"] = "link_and_dedupe"
+    db_api = DuckDBAPI()
+    sds_d_sdf = db_api.register(sds_d_only)
+    sds_b_sdf = db_api.register(sds_b_only)
+    linker = Linker([sds_d_sdf, sds_b_sdf], settings)
+    predict_rows = linker.inference.predict().as_record_list()
 
-    for s in [settings, settings_salt]:
-        db_api = DuckDBAPI()
+    assert len(predict_rows) == (4 * 3) / 2
 
-        linker = Linker([sds_d_only, sds_b_only], s, db_api=db_api)
-
-        df_predict = linker.inference.predict().as_pandas_dataframe()
-
-        assert len(df_predict) == (4 * 3) / 2
-
-        # Check that the lower ID is always on the left hand side
-        df_predict["id_concat_l"] = (
-            df_predict["source_dataset_l"] + "-__-" + df_predict["id_l"].astype(str)
-        )
-        df_predict["id_concat_r"] = (
-            df_predict["source_dataset_r"] + "-__-" + df_predict["id_r"].astype(str)
-        )
-        assert all(df_predict["id_concat_l"] < df_predict["id_concat_r"])
-
-        # self_link = linker._self_link().as_pandas_dataframe()
-        # assert len(self_link) == 4
+    # Check that the lower ID is always on the left hand side
+    predict_rows = [
+        {
+            **row,
+            "id_concat_l": f"{row['source_dataset_l']}-__-{row['id_l']}",
+            "id_concat_r": f"{row['source_dataset_r']}-__-{row['id_r']}",
+        }
+        for row in predict_rows
+    ]
+    assert all(row["id_concat_l"] < row["id_concat_r"] for row in predict_rows)
 
 
 def test_link_and_dedupe_three_join_condition():
     settings = deepcopy(settings_template)
     settings["link_type"] = "link_and_dedupe"
 
-    settings_salt = deepcopy(settings_template)
-    settings_salt["link_type"] = "link_and_dedupe"
+    db_api = DuckDBAPI()
+    sds_d_sdf = db_api.register(sds_d_only)
+    sds_b_sdf = db_api.register(sds_b_only)
+    sds_c_sdf = db_api.register(sds_c_only)
+    linker = Linker([sds_d_sdf, sds_b_sdf, sds_c_sdf], settings)
+    predict_rows = linker.inference.predict().as_record_list()
 
-    for s in [settings, settings_salt]:
-        db_api = DuckDBAPI()
+    assert len(predict_rows) == (6 * 5) / 2
 
-        linker = Linker([sds_d_only, sds_b_only, sds_c_only], s, db_api=db_api)
-
-        df_predict = linker.inference.predict().as_pandas_dataframe()
-
-        assert len(df_predict) == (6 * 5) / 2
-
-        # Check that the lower ID is always on the left hand side
-        df_predict["id_concat_l"] = (
-            df_predict["source_dataset_l"] + "-__-" + df_predict["id_l"].astype(str)
-        )
-        df_predict["id_concat_r"] = (
-            df_predict["source_dataset_r"] + "-__-" + df_predict["id_r"].astype(str)
-        )
-        assert all(df_predict["id_concat_l"] < df_predict["id_concat_r"])
-
-        # self_link = linker._self_link().as_pandas_dataframe()
-        # assert len(self_link) == 4
+    # Check that the lower ID is always on the left hand side
+    predict_rows = [
+        {
+            **row,
+            "id_concat_l": f"{row['source_dataset_l']}-__-{row['id_l']}",
+            "id_concat_r": f"{row['source_dataset_r']}-__-{row['id_r']}",
+        }
+        for row in predict_rows
+    ]
+    assert all(row["id_concat_l"] < row["id_concat_r"] for row in predict_rows)

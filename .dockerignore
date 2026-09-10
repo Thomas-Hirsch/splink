@@ -1,10 +1,13 @@
 *
 
+!docs/
 !tests/
 !splink/
 !scripts/
 !pyproject.toml
-!poetry.lock
+!uv.lock
 !README.md
+!LICENSE
+!.gitignore
 
 **/*.pyc

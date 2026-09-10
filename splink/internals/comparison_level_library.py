@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import copy
 from functools import wraps
-from typing import Any, Callable, List, Literal, TypeVar, Union
+from typing import Any, Callable, List, Literal, Protocol, TypeGuard, TypeVar, Union
 
 from sqlglot import TokenError, parse_one
 
@@ -40,7 +40,7 @@ def unsupported_splink_dialects(
 def _translate_sql_string(
     sqlglot_base_dialect_sql: str,
     to_sqlglot_dialect: str,
-    from_sqlglot_dialect: str = None,
+    from_sqlglot_dialect: str | None = None,
 ) -> str:
     tree = parse_one(sqlglot_base_dialect_sql, read=from_sqlglot_dialect)
 
@@ -81,7 +81,7 @@ def validate_categorical_parameter(
     else:
         comma_quote_separated_options = "', '".join(allowed_values)
         raise ValueError(
-            f"'{parameter_name}' must be one of: " f"'{comma_quote_separated_options}'"
+            f"'{parameter_name}' must be one of: '{comma_quote_separated_options}'"
         )
 
 
@@ -103,7 +103,7 @@ class NullLevel(ComparisonLevelCreator):
     def __init__(
         self,
         col_name: Union[str, ColumnExpression],
-        valid_string_pattern: str = None,
+        valid_string_pattern: str | None = None,
     ):
         col_expression = ColumnExpression.instantiate_if_str(col_name)
 
@@ -139,8 +139,8 @@ class CustomLevel(ComparisonLevelCreator):
     def __init__(
         self,
         sql_condition: str,
-        label_for_charts: str = None,
-        base_dialect_str: str = None,
+        label_for_charts: str | None = None,
+        base_dialect_str: str | None = None,
     ):
         """Represents a comparison level with a custom sql expression
 
@@ -256,7 +256,7 @@ class ExactMatchLevel(ComparisonLevelCreator):
     @property
     def term_frequency_adjustments(self):
         # mypy doesn't know about attribute as we use magic in .configure()
-        return self.tf_adjustment_column is not None  # type: ignore [attr-defined]
+        return self.tf_adjustment_column is not None  # type: ignore [attr-defined]  # ty: ignore[unresolved-attribute]
 
     @term_frequency_adjustments.setter
     def term_frequency_adjustments(self, term_frequency_adjustments: bool) -> None:
@@ -350,7 +350,7 @@ class LiteralMatchLevel(ComparisonLevelCreator):
         elif self.side_of_comparison == "right":
             return f"{col.name_r} = {dialected}"
         elif self.side_of_comparison == "both":
-            return f"{col.name_l} = {dialected}" f" AND {col.name_r} = {dialected}"
+            return f"{col.name_l} = {dialected} AND {col.name_r} = {dialected}"
         raise ValueError(f"Invalid `side_of_comparison`: {self.side_of_comparison}.")
 
     def create_label_for_charts(self) -> str:
@@ -610,6 +610,105 @@ class DistanceFunctionLevel(ComparisonLevelCreator):
         )
 
 
+class PairwiseStringDistanceFunctionLevel(ComparisonLevelCreator):
+    def __init__(
+        self,
+        col_name: str | ColumnExpression,
+        distance_function_name: Literal[
+            "levenshtein", "damerau_levenshtein", "jaro_winkler", "jaro"
+        ],
+        distance_threshold: Union[int, float],
+    ):
+        """A comparison level using the *most similar* string distance
+        between any pair of values between arrays in an array column.
+
+        The function given by `distance_function_name` must be one of
+        "levenshtein," "damera_levenshtein," "jaro_winkler," or "jaro."
+
+        Args:
+            col_name (str | ColumnExpression): Input column name
+            distance_function_name (str): the name of the string distance function
+            distance_threshold (Union[int, float]): The threshold to use to assess
+                similarity
+        """
+
+        self.col_expression = ColumnExpression.instantiate_if_str(col_name)
+        self.distance_function_name = validate_categorical_parameter(
+            allowed_values=[
+                "levenshtein",
+                "damerau_levenshtein",
+                "jaro_winkler",
+                "jaro",
+            ],
+            parameter_value=distance_function_name,
+            level_name=self.__class__.__name__,
+            parameter_name="distance_function_name",
+        )
+        self.distance_threshold = validate_numeric_parameter(
+            lower_bound=0,
+            upper_bound=float("inf"),
+            parameter_value=distance_threshold,
+            level_name=self.__class__.__name__,
+            parameter_name="distance_threshold",
+        )
+
+    @unsupported_splink_dialects(["sqlite", "postgres"])
+    def create_sql(self, sql_dialect: SplinkDialect) -> str:
+        self.col_expression.sql_dialect = sql_dialect
+        col = self.col_expression
+        distance_function_name_transpiled = {
+            "levenshtein": sql_dialect.levenshtein_function_name,
+            "damerau_levenshtein": sql_dialect.damerau_levenshtein_function_name,
+            "jaro_winkler": sql_dialect.jaro_winkler_function_name,
+            "jaro": sql_dialect.jaro_function_name,
+        }[self.distance_function_name]
+
+        aggregator_func = {
+            "min": sql_dialect.array_min_function_name,
+            "max": sql_dialect.array_max_function_name,
+        }[self._aggregator()]
+
+        return f"""{aggregator_func}(
+                    {sql_dialect.array_transform_function_name}(
+                        flatten(
+                            {sql_dialect.array_transform_function_name}(
+                                {col.name_l},
+                                x -> {sql_dialect.array_transform_function_name}(
+                                    {col.name_r},
+                                    y -> [x, y]
+                                )
+                            )
+                        ),
+                        pair -> {distance_function_name_transpiled}(
+                            pair[{sql_dialect.array_first_index}],
+                            pair[{sql_dialect.array_first_index + 1}]
+                        )
+                    )
+                ) {self._comparator()} {self.distance_threshold}"""
+
+    def create_label_for_charts(self) -> str:
+        col = self.col_expression
+        return (
+            f"{self._aggregator().title()} `{self.distance_function_name}` "
+            f"distance of '{col.label}' "
+            f"{self._comparator()} than {self.distance_threshold}'"
+        )
+
+    def _aggregator(self):
+        return "max" if self._higher_is_more_similar() else "min"
+
+    def _comparator(self):
+        return ">=" if self._higher_is_more_similar() else "<="
+
+    def _higher_is_more_similar(self):
+        return {
+            "levenshtein": False,
+            "damerau_levenshtein": False,
+            "jaro_winkler": True,
+            "jaro": True,
+        }[self.distance_function_name]
+
+
 DateMetricType = Literal["second", "minute", "hour", "day", "month", "year"]
 
 
@@ -621,7 +720,7 @@ class AbsoluteTimeDifferenceLevel(ComparisonLevelCreator):
         input_is_string: bool,
         threshold: Union[int, float],
         metric: DateMetricType,
-        datetime_format: str = None,
+        datetime_format: str | None = None,
     ):
         """
         Computes the absolute elapsed time between two dates (total duration).
@@ -687,6 +786,10 @@ class AbsoluteTimeDifferenceLevel(ComparisonLevelCreator):
     def datetime_parsed_column_expression(self):
         return self.col_expression.try_parse_timestamp
 
+    @property
+    def custom_time_diff_sql_attribute_name(self) -> str:
+        return "absolute_time_difference"
+
     @unsupported_splink_dialects(["sqlite"])
     def create_sql(self, sql_dialect: SplinkDialect) -> str:
         """Use sqlglot to auto transpile where possible
@@ -702,8 +805,13 @@ class AbsoluteTimeDifferenceLevel(ComparisonLevelCreator):
             )
 
         # If the dialect has an override, use it
-        if hasattr(sql_dialect, "absolute_time_difference"):
-            return sql_dialect.absolute_time_difference(self)
+        dialect_sql_method = getattr(
+            sql_dialect,
+            self.custom_time_diff_sql_attribute_name,
+            None,
+        )
+        if dialect_sql_method is not None:
+            return dialect_sql_method(self)
 
         sqlglot_base_dialect_sql = (
             "abs(TIME_TO_UNIX(___col____l)"
@@ -732,6 +840,10 @@ class AbsoluteDateDifferenceLevel(AbsoluteTimeDifferenceLevel):
     @property
     def datetime_parsed_column_expression(self):
         return self.col_expression.try_parse_date
+
+    @property
+    def custom_time_diff_sql_attribute_name(self) -> str:
+        return "absolute_date_difference"
 
 
 class DistanceInKMLevel(ComparisonLevelCreator):
@@ -819,16 +931,31 @@ class CosineSimilarityLevel(ComparisonLevelCreator):
     def create_sql(self, sql_dialect: SplinkDialect) -> str:
         self.col_expression.sql_dialect = sql_dialect
         col = self.col_expression
-        cs_fn = sql_dialect.cosine_similarity_function_name
-        return f"{cs_fn}({col.name_l}, {col.name_r}) >= {self.similarity_threshold}"
+        cosine_similarity_sql = getattr(sql_dialect, "cosine_similarity_sql", None)
+        if cosine_similarity_sql is not None:
+            cs_sql = cosine_similarity_sql(col.name_l, col.name_r)
+        else:
+            cs_fn = sql_dialect.cosine_similarity_function_name
+            cs_sql = f"{cs_fn}({col.name_l}, {col.name_r})"
+        return f"{cs_sql} >= {self.similarity_threshold}"
 
     def create_label_for_charts(self) -> str:
         col = self.col_expression
         return f"Cosine similarity of {col.label} >= {self.similarity_threshold}"
 
 
+class DialectWithArrayIntersect(Protocol):
+    def array_intersect(self, clc: "ArrayIntersectLevel") -> str: ...
+
+
+def _dialect_has_array_intersect_function(
+    sql_dialect: SplinkDialect,
+) -> TypeGuard[DialectWithArrayIntersect]:
+    return hasattr(sql_dialect, "array_intersect")
+
+
 class ArrayIntersectLevel(ComparisonLevelCreator):
-    def __init__(self, col_name: str | ColumnExpression, min_intersection: int):
+    def __init__(self, col_name: str | ColumnExpression, min_intersection: int = 1):
         """Represents a comparison level based around the size of an intersection of
         arrays
 
@@ -849,7 +976,7 @@ class ArrayIntersectLevel(ComparisonLevelCreator):
 
     @unsupported_splink_dialects(["sqlite"])
     def create_sql(self, sql_dialect: SplinkDialect) -> str:
-        if hasattr(sql_dialect, "array_intersect"):
+        if _dialect_has_array_intersect_function(sql_dialect):
             return sql_dialect.array_intersect(self)
 
         sqlglot_dialect_name = sql_dialect.sqlglot_dialect

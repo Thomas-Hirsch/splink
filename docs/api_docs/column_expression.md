@@ -16,6 +16,7 @@ However, there may be situations where you don't wish to derive a new column, pe
 
 This is where a `ColumnExpression` may be used. It represents some SQL expression, which may be a column, or some more complicated construct,
 to which you can also apply zero or more transformations. These are lazily evaluated, and in particular will not be tied to a specific SQL dialect until they are put (via [settings](./settings_dict_guide.md) into a linker).
+This can be particularly useful if you want to write code that can easily be switched between different backends.
 
 ??? warning "Term frequency adjustments"
     One caveat to using a `ColumnExpression` is that it cannot be combined with term frequency adjustments.
@@ -41,7 +42,7 @@ from splink import block_on
 import splink.comparison_library as cl
 import splink.comparison_level_library as cll
 
-full_name_lower_br = block_on([full_name_lowercase])
+full_name_lower_br = block_on(full_name_lowercase)
 
 email_comparison = cl.DamerauLevenshteinAtThresholds(email_lowercase, distance_threshold_or_thresholds=[1, 3])
 entry_date_comparison = cl.AbsoluteTimeDifferenceAtThresholds(
@@ -53,10 +54,10 @@ entry_date_comparison = cl.AbsoluteTimeDifferenceAtThresholds(
 name_comparison = cl.CustomComparison(
     comparison_levels=[
         cll.NullLevel(full_name_lowercase),
-        cll.ExactMatch(full_name_lowercase),
-        cll.ExactMatch("surname")
-        cll.ExactMatch("first_name"),
-        cll.ExactMatch(surname_initial_lowercase),
+        cll.ExactMatchLevel(full_name_lowercase),
+        cll.ExactMatchLevel("surname"),
+        cll.ExactMatchLevel("first_name"),
+        cll.ExactMatchLevel(surname_initial_lowercase),
         cll.ElseLevel()
     ],
     output_column_name="name",

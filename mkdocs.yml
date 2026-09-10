@@ -51,13 +51,14 @@ plugins:
         remove_all_outputs_tags:
           - hide_output
   - tags
+  # automatic documentation of python objects from docstrings
   - mkdocstrings:
       default_handler: python
       handlers:
         python:
-          rendering:
+          options:
             show_source: false
-  - charts
+  # embedding videos, see e.g. docs/dev_guides/charts/understanding_and_editing_charts.md
   - mkdocs-video:
       is_video: True
       video_autoplay: false
@@ -65,39 +66,118 @@ plugins:
       match_path: blog/posts/.*
       date_from_meta:
         as_creation: date
+  - llmstxt:
+      markdown_description: |
+        Splink is a Python library for probabilistic record linkage, deduplication,
+        and entity resolution across backends such as DuckDB, Spark, SQLite, and
+        PostgreSQL. It is aimed at data scientists, analysts, researchers, and
+        engineers building or maintaining linkage pipelines.
+
+        Agents should fetch /llms.txt first as a compact map of the documentation,
+        then fetch only the linked Markdown pages that match the task. Start with
+        the overview and getting started pages for orientation, the core concepts
+        pages to understand settings, blocking, comparisons, and theory, the
+        tutorials and examples for end-to-end workflows, and the API reference for
+        method-level detail.
+      full_output: llms-full.txt
+      sections:
+        Overview:
+          - index.md: Product overview, capabilities, and high-level positioning.
+          - topic_guides/topic_guides_index.md: Map of the conceptual user guide.
+          - api_docs/api_docs_index.md: Map of the API reference.
+        Getting started:
+          - getting_started.md: Installation and the first end-to-end Splink workflow.
+        Tutorials and examples:
+          - demos/examples/examples_index.md: Index of runnable examples by backend and problem type.
+        "User guide: record linkage theory":
+          - topic_guides/theory/*.md
+        "User guide: Splink fundamentals":
+          - topic_guides/splink_fundamentals/*.md
+          - topic_guides/splink_fundamentals/backends/*.md
+        "User guide: data preparation":
+          - topic_guides/data_preparation/*.md
+        "User guide: blocking":
+          - topic_guides/blocking/*.md
+        "User guide: comparisons":
+          - topic_guides/comparisons/*.md
+        "User guide: training":
+          - topic_guides/training/*.md
+        "User guide: evaluation":
+          - topic_guides/evaluation/*.md
+          - topic_guides/evaluation/clusters/*.md
+        "User guide: performance":
+          - topic_guides/performance/*.md
+        API reference:
+          - api_docs/training.md: Training methods on the Linker.
+          - api_docs/inference.md: Inference and prediction methods.
+          - api_docs/linker_clustering.md: Clustering APIs.
+          - api_docs/evaluation.md: Evaluation APIs.
+          - api_docs/comparison_library.md: Built-in comparison helpers.
+          - api_docs/comparison_level_library.md: Built-in comparison level helpers.
+          - api_docs/blocking.md: Blocking API reference.
+          - api_docs/datasets.md: Built-in datasets for demos and tests.
+        Contributor and debugging guides:
+          - dev_guides/changing_splink/development_quickstart.md: Contributor setup when the task involves changing Splink itself.
+          - dev_guides/debug_modes.md: Debugging and inspection modes when behavior is unclear.
 hooks:
   - docs/hooks/__init__.py
 
+exclude_docs: |
+  *
+  # Keep source pages
+  !*.md
+  !**/*.md
+  !**/*.ipynb
+  # And the assets we have
+  !**/*.png
+  !**/*.ico
+  !**/*.mp4
+  !**/*.html
+  !**/*.css
+  !**/*.js
+
 markdown_extensions:
-  - abbr
+  # add id/style etc to markdown elements - see getting started button in docs/index.md
+  # markdown
   - attr_list
+  # for frontmatter in --- blocks, for e.g. tags
+  # mkdocs-material
   - meta
+  # for admonition blocks e.g. !!! warning
+  # markdown
   - admonition
+  # markdown in html blocks, e.g. <figure> in docs/topic_guides/comparisons/term-frequency.md
+  # markdown
   - md_in_html
+  # for expandables with ???
+  # pymdown-extensions
   - pymdownx.details
+  # for inline latex - see e.g. docs/topic_guides/theory/fellegi_sunter.md
+  # pymdown-extensions
   - pymdownx.arithmatex:
       generic: true
-  - pymdownx.superfences:
-      custom_fences:
-        - name: vegalite
-          class: vegalite
-          format: !!python/name:mkdocs_charts_plugin.fences.fence_vegalite
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
-  - pymdownx.snippets:
-      auto_append:
-        - includes/abbreviations.md
+  # code markdown in admonitions, e.g. docs/getting_started.md
+  - pymdownx.superfences
+  # tabbed sections with === - e.g. docs/index.md
+  # pymdown-extensions
   - pymdownx.tabbed:
       alternate_style: true
+  # table of contents
+  # markdown
   - toc:
       permalink: True
       toc_depth: 3
-  - attr_list
+  # emojis specified as e.g. :link: - see e.g. docs/blog/posts/2024-01-25-ethics.md
+  # pymdown-extensions
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
+        # footnotes see e.g. docs/topic_guides/theory/fellegi_sunter.md
+        # mkdocs-material
+
   - footnotes
+  # ::cards:: - see e.g. docs/charts/index.md
+  # neoteroi-mkdocs
   - neoteroi.cards
 nav:
   - Getting Started: "getting_started.md"
@@ -110,11 +190,14 @@ nav:
       - 5. Predicting results: "demos/tutorials/05_Predicting_results.ipynb"
       - 6. Visualising predictions: "demos/tutorials/06_Visualising_predictions.ipynb"
       - 7. Evaluation: "demos/tutorials/07_Evaluation.ipynb"
+      - 8. Tips for building your own model: "demos/tutorials/08_building_your_own_model.md"
+      - 9. Scaling up to large datasets: "demos/tutorials/09_scaling_up_techniques.ipynb"
   - Examples:
       - Introduction: "demos/examples/examples_index.md"
       - DuckDB:
         - Deduplicate 50k rows historical persons: "demos/examples/duckdb/deduplicate_50k_synthetic.ipynb"
         - Linking financial transactions: "demos/examples/duckdb/transactions.ipynb"
+        - Linking businesses: "demos/examples/duckdb_no_test/business_rates_match.ipynb"
         - Linking two tables of persons: "demos/examples/duckdb/link_only.ipynb"
         - Real time record linkage: "demos/examples/duckdb/real_time_record_linkage.ipynb"
         - Evaluation from ground truth column: "demos/examples/duckdb/accuracy_analysis_from_labels_column.ipynb"
@@ -123,20 +206,22 @@ nav:
         - Deterministic dedupe: "demos/examples/duckdb/deterministic_dedupe.ipynb"
         - Febrl3 Dedupe: "demos/examples/duckdb/febrl3.ipynb"
         - Febrl4 link-only: "demos/examples/duckdb/febrl4.ipynb"
-        - Cookbook: "demos/examples/duckdb/cookbook.ipynb"
+        - Cookbook: "demos/examples/duckdb_no_test/cookbook.ipynb"
+        - Investigating Bias in a Splink Model: "demos/examples/duckdb_no_test/bias_eval.ipynb"
+        - Comparison playground: "demos/examples/duckdb_no_test/comparison_playground.ipynb"
+        - Pseudopeople Census to ACS link: "demos/examples/duckdb_no_test/pseudopeople-acs.ipynb"
       - PySpark:
         - Deduplication using Pyspark: "demos/examples/spark/deduplicate_1k_synthetic.ipynb"
-      - Athena:
-        - Deduplicate 50k rows historical persons: "demos/examples/athena/deduplicate_50k_synthetic.ipynb"
       - SQLite:
         - Deduplicate 50k rows historical persons: "demos/examples/sqlite/deduplicate_50k_synthetic.ipynb"
   - API Docs:
+    # This should align with docs/api_docs/api_docs_index.md
     - Introduction: "api_docs/api_docs_index.md"
     - Linker:
       - Training: "api_docs/training.md"
       - Visualisations: "api_docs/visualisations.md"
       - Inference: "api_docs/inference.md"
-      - Clustering: "api_docs/clustering.md"
+      - Clustering: "api_docs/linker_clustering.md"
       - Evaluation: "api_docs/evaluation.md"
       - Table Management: "api_docs/table_management.md"
       - Miscellaneous functions: "api_docs/misc.md"
@@ -145,11 +230,15 @@ nav:
         - Comparison Level Library: "api_docs/comparison_level_library.md"
     - Other:
         - Exploratory: "api_docs/exploratory.md"
-        - Blocking rule creator: "api_docs/blocking.md"
         - Blocking analysis: "api_docs/blocking_analysis.md"
+        - Blocking: "api_docs/blocking.md"
+        - Clustering: "api_docs/clustering.md"
         - SplinkDataFrame: "api_docs/splink_dataframe.md"
         - EM Training Session API: "api_docs/em_training_session.md"
+        - Column Expressions: "api_docs/column_expression.md"
+    - In-build datasets:
         - SplinkDatasets: "api_docs/datasets.md"
+    - Splink Settings:
         - Settings Dict: "api_docs/settings_dict_guide.md"
   - User Guide:
     - Introduction: "topic_guides/topic_guides_index.md"
@@ -181,6 +270,8 @@ nav:
         - Choosing string comparators: "topic_guides/comparisons/choosing_comparators.ipynb"
         - Phonetic algorithms: "topic_guides/comparisons/phonetic.md"
         - Regular expressions: "topic_guides/comparisons/regular_expressions.ipynb"
+    - Training:
+      - Training rationale: "topic_guides/training/training_rationale.md"
     - Evaluation:
       - Overview: "topic_guides/evaluation/overview.md"
       - Model: "topic_guides/evaluation/model.md"
@@ -194,9 +285,9 @@ nav:
         - How to compute graph metrics: "topic_guides/evaluation/clusters/how_to_compute_metrics.ipynb"
     - Performance:
       - Run times, performance and linking large data: "topic_guides/performance/drivers_of_performance.md"
+      - Performance of comparison functions: "topic_guides/performance/performance_of_comparison_functions.ipynb"
       - Spark Performance:
           - Optimising Spark performance: "topic_guides/performance/optimising_spark.md"
-          - Salting blocking rules: "topic_guides/performance/salting.md"
       - DuckDB Performance:
           - Optimising DuckDB performance: "topic_guides/performance/optimising_duckdb.md"
     - Charts Gallery:
@@ -228,11 +319,10 @@ nav:
       - Contributing to Splink:
         - Contributor Guide: "dev_guides/CONTRIBUTING.md"
         - Development Quickstart: "dev_guides/changing_splink/development_quickstart.md"
-        - Building your local environment: "dev_guides/changing_splink/building_env_locally.md"
         - Linting and Formatting: "dev_guides/changing_splink/lint_and_format.md"
         - Testing: "dev_guides/changing_splink/testing.md"
         - Contributing to Documentation: "dev_guides/changing_splink/contributing_to_docs.md"
-        - Managing Dependencies with Poetry: "dev_guides/changing_splink/managing_dependencies_with_poetry.md"
+        - Managing Environment and Dependencies: "dev_guides/changing_splink/managing_dependencies_with_uv.md"
         - Releasing a Package Version: "dev_guides/changing_splink/releases.md"
         - Contributing to the Splink Blog: "dev_guides/changing_splink/blog_posts.md"
       - How Splink works:
@@ -245,9 +335,6 @@ nav:
           - Understanding and editing charts: "dev_guides/charts/understanding_and_editing_charts.md"
           - Building new charts: "dev_guides/charts/building_charts.ipynb"
         - User-Defined Functions: "dev_guides/udfs.md"
-        - Settings Validation:
-          - Settings Validation Overview: "dev_guides/settings_validation/settings_validation_overview.md"
-          - Extending the Settings Validator: "dev_guides/settings_validation/extending_settings_validator.md"
         - Dependency Compatibility Policy: "dev_guides/dependency_compatibility_policy.md"
   - Blog:
     - blog/index.md
@@ -256,11 +343,7 @@ extra_css:
 - css/neoteroi-mkdocs.css
 extra_javascript:
   - javascripts/mathjax.js
-  - https://polyfill.io/v3/polyfill.min.js?features=es6
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
-  - https://cdn.jsdelivr.net/npm/vega@5
-  - https://cdn.jsdelivr.net/npm/vega-lite@5
-  - https://cdn.jsdelivr.net/npm/vega-embed@6
 extra:
   analytics:
     provider: google

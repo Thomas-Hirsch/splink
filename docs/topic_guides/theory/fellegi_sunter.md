@@ -43,7 +43,7 @@ $$
 m = Pr(\textsf{Observation | Records match})
 $$
 
-For example, consider the the $m$ probability of a match on Date of Birth (DOB). For two records that are a match, what is the probability that:
+For example, consider the $m$ probability of a match on Date of Birth (DOB). For two records that are a match, what is the probability that:
 
 - **DOB is the same**:
   - Almost 100%, say 98% $\Longrightarrow m \approx 0.98$
@@ -217,6 +217,8 @@ So, the impact of any additional _match weight_ on _match probability_ gets smal
 
 Similarly, if you already have a lot of negative evidence/features indicating a match, adding more evidence/features will not have much of an impact on the probability of a match.
 
+An interactive visualisation of the relationship between match weights, bayes factors and proabilities can be found [here](https://www.robinlinacre.com/prob_bf_mw/).
+
 ### Deriving Match Probability from m and u
 
 Given the definitions for _match probability_ and _match weight_ above, we can rewrite the probability in terms of $m$ and $u$.
@@ -238,5 +240,5 @@ $$
 
 ## Further Reading
 
-[This academic paper](https://imai.fas.harvard.edu/research/files/linkage.pdf) provides a detailed mathematical description of the model used by R [fastLink package](https://github.com/kosukeimai/fastLink).  The mathematical uesd by Splink is very similar.
+[This academic paper](https://imai.fas.harvard.edu/research/files/linkage.pdf) provides a detailed mathematical description of the model used by R [fastLink package](https://github.com/kosukeimai/fastLink).  The mathematics used by Splink is very similar.
 

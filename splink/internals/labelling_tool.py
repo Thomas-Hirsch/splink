@@ -5,14 +5,10 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
-import pandas as pd
-from jinja2 import Template
-
 from splink.internals.misc import EverythingEncoder, read_resource
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
-from splink.internals.vertically_concatenate import compute_df_concat_with_tf
+from splink.internals.vertically_concatenate import enqueue_df_concat_with_tf
 
 # https://stackoverflow.com/questions/39740632/python-type-hinting-without-cyclic-imports
 if TYPE_CHECKING:
@@ -24,37 +20,52 @@ logger = logging.getLogger(__name__)
 def generate_labelling_tool_comparisons(
     linker: "Linker",
     unique_id: str,
-    source_dataset: str,
+    source_dataset: str | None,
     match_weight_threshold: float = -4,
 ) -> SplinkDataFrame:
-    # ensure the tf table exists
-    pipeline = CTEPipeline()
-    nodes_with_tf = compute_df_concat_with_tf(linker, pipeline)
-
-    pipeline = CTEPipeline([nodes_with_tf])
     settings = linker._settings_obj
 
-    source_dataset_condition = ""
+    # Materialise all input records (with term frequency columns) so that the
+    # record of interest can be compared against them using a full block.
+    pipeline = CTEPipeline()
+    enqueue_df_concat_with_tf(linker, pipeline)
+    all_records = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
+    # Extract the single record of interest
+    source_dataset_condition = ""
     if source_dataset is not None:
         sds_col = settings.column_info_settings.source_dataset_column_name
         source_dataset_condition = f"""
           and {sds_col} = '{source_dataset}'
         """
 
+    pipeline = CTEPipeline()
     sql = f"""
     select *
-    from __splink__df_concat_with_tf
+    from {all_records.physical_name}
     where {settings.column_info_settings.unique_id_column_name} = '{unique_id}'
     {source_dataset_condition}
     """
-
     pipeline.enqueue_sql(sql, "__splink__df_labelling_tool_record")
-    splink_df = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+    record = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
-    matches = linker.inference.find_matches_to_new_records(
-        splink_df.physical_name, match_weight_threshold=match_weight_threshold
-    )
+    # Compare every input record against the record of interest (full block).
+    # The input records are passed first so they appear on the "_l" side of the
+    # comparison, which is the side the labelling tool renders as the source data.
+    comparisons = linker.inference.score_pairs(all_records, record)
+
+    # Keep only matches scoring above the threshold
+    pipeline = CTEPipeline()
+    sql = f"""
+    select *
+    from {comparisons.physical_name}
+    where match_weight > {match_weight_threshold}
+    """
+    pipeline.enqueue_sql(sql, "__splink__df_labelling_tool_comparisons")
+    matches = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    record.drop_table_from_database_and_remove_from_cache()
+    comparisons.drop_table_from_database_and_remove_from_cache()
 
     return matches
 
@@ -67,6 +78,10 @@ def render_labelling_tool_html(
     show_splink_predictions_in_interface: bool = True,
     overwrite: bool = True,
 ) -> str:
+    import numpy as np
+    import pandas as pd
+    from jinja2 import Template
+
     settings: dict[str, Any] = linker._settings_obj.as_dict()
 
     logger.warning(
